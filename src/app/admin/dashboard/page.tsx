@@ -16,7 +16,11 @@ async function getItems(): Promise<LotteryItem[]> {
     .select('*')
     .order('number', { ascending: true });
   if (error) return MOCK_ITEMS;
-  return data as LotteryItem[];
+  // Normalize price: Supabase REST may return integer columns as strings
+  return (data as LotteryItem[]).map((item) => ({
+    ...item,
+    price: item.price != null ? Number(item.price) as LotteryItem['price'] : null,
+  }));
 }
 
 async function getSession() {

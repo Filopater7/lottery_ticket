@@ -56,6 +56,7 @@ const SEED: [string, PriceTier][] = [
 export const MOCK_ITEMS: LotteryItem[] = SEED.map(([title, price], i) => ({
   id:         `mock-${i + 1}`,
   number:     i + 1,
+  code:       null,
   title,
   price,
   image_url:  null,

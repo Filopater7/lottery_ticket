@@ -44,6 +44,7 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
       list = list.filter(
         (item) =>
           item.number.toString().includes(q) ||
+          (item.code?.toLowerCase() ?? '').includes(q) ||
           item.title.toLowerCase().includes(q)
       );
     }
@@ -84,7 +85,7 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
     const res = await fetch('/api/admin/items', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: item.id, number: item.number, title: item.title, image_url: item.image_url, price: item.price, enabled: !item.enabled }),
+      body: JSON.stringify({ id: item.id, number: item.number, code: item.code, title: item.title, image_url: item.image_url, price: item.price, enabled: !item.enabled }),
     });
     const json = await res.json();
     if (!res.ok) {
@@ -192,6 +193,7 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
               <thead>
                 <tr className="border-b border-slate-100 bg-slate-50/60">
                   <th className="text-left text-xs font-medium text-slate-500 px-4 py-3 w-16">#</th>
+                  <th className="text-left text-xs font-medium text-slate-500 px-4 py-3 w-28">Code</th>
                   <th className="text-left text-xs font-medium text-slate-500 px-4 py-3">Image</th>
                   <th className="text-left text-xs font-medium text-slate-500 px-4 py-3">Title</th>
                   <th className="text-left text-xs font-medium text-slate-500 px-4 py-3">Price</th>
@@ -202,7 +204,7 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
               <tbody className="divide-y divide-slate-50">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-slate-400">
+                    <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-400">
                       {search ? `No results for "${search}"` : filter !== 'all' ? `No $${filter} tickets` : 'No tickets yet. Add one above.'}
                     </td>
                   </tr>
@@ -211,6 +213,13 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
                     <tr key={item.id} className="hover:bg-slate-50/60 transition-colors">
                       <td className="px-4 py-3 font-mono font-bold text-slate-700 text-xs w-16">
                         {item.number}
+                      </td>
+                      <td className="px-4 py-3 w-28">
+                        {item.code ? (
+                          <span className="font-mono text-xs font-semibold text-slate-800">{item.code}</span>
+                        ) : (
+                          <span className="text-slate-300 text-xs">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="w-14 h-9 rounded-md overflow-hidden bg-slate-100 flex-shrink-0">

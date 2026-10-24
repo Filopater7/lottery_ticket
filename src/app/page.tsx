@@ -16,16 +16,20 @@ async function getItems(): Promise<LotteryItem[]> {
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase
     .from('items')
-    .select('id, number, title, image_url, enabled')
+    .select('id, number, code, title, image_url, price, enabled')
     .eq('enabled', true)
     .order('number', { ascending: true })
     .limit(200);
 
   if (error) {
-    console.error('[page] Failed to load items:', error);
+    console.error('[page] Failed to load items:', JSON.stringify(error));
     return MOCK_ITEMS;
   }
-  return data as LotteryItem[];
+  // Normalize price: Supabase REST may return integer columns as strings
+  return (data as LotteryItem[]).map((item) => ({
+    ...item,
+    price: item.price != null ? Number(item.price) as LotteryItem['price'] : null,
+  }));
 }
 
 export default async function HomePage() {

@@ -4,6 +4,7 @@ export type PriceTier = typeof PRICE_TIERS[number];
 export interface LotteryItem {
   id: string;
   number: number;
+  code: string | null;
   title: string;
   image_url: string | null;
   price: PriceTier | null;
@@ -14,6 +15,7 @@ export interface LotteryItem {
 
 export interface ItemFormData {
   number: number;
+  code: string | null;
   title: string;
   image_url: string | null;
   price: PriceTier | null;

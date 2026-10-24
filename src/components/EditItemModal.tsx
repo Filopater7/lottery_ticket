@@ -12,6 +12,7 @@ interface EditItemModalProps {
 
 export default function EditItemModal({ item, onSave, onClose }: EditItemModalProps) {
   const [number, setNumber]     = useState(item?.number?.toString() ?? '');
+  const [code, setCode]         = useState(item?.code ?? '');
   const [title, setTitle]       = useState(item?.title ?? '');
   const [imageUrl, setImageUrl] = useState(item?.image_url ?? '');
   const [price, setPrice]       = useState<PriceTier | null>(item?.price ?? null);
@@ -56,7 +57,7 @@ export default function EditItemModal({ item, onSave, onClose }: EditItemModalPr
     }
     setSaving(true);
     try {
-      await onSave({ number: num, title, image_url: imageUrl || null, price, enabled }, item?.id);
+      await onSave({ number: num, code: code.trim() || null, title, image_url: imageUrl || null, price, enabled }, item?.id);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save');
     } finally {
@@ -90,7 +91,7 @@ export default function EditItemModal({ item, onSave, onClose }: EditItemModalPr
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label htmlFor="item-number" className="block text-xs font-medium text-slate-700 mb-1.5">
-                Number <span className="text-red-500">*</span>
+                Sort # <span className="text-red-500">*</span>
               </label>
               <input
                 id="item-number"
@@ -104,22 +105,36 @@ export default function EditItemModal({ item, onSave, onClose }: EditItemModalPr
                 placeholder="1"
               />
             </div>
-            <div className="flex items-end pb-0.5">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={enabled}
-                  onClick={() => setEnabled(!enabled)}
-                  className={`relative w-9 h-5 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1 ${
-                    enabled ? 'bg-brand-600' : 'bg-slate-200'
-                  }`}
-                >
-                  <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${enabled ? 'translate-x-4' : ''}`} />
-                </button>
-                <span className="text-xs font-medium text-slate-700">Visible</span>
+            <div>
+              <label htmlFor="item-code" className="block text-xs font-medium text-slate-700 mb-1.5">
+                Code
               </label>
+              <input
+                id="item-code"
+                type="text"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                className="input-field font-mono"
+                placeholder="#2246"
+                maxLength={20}
+              />
             </div>
+          </div>
+
+          {/* Visibility */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enabled}
+              onClick={() => setEnabled(!enabled)}
+              className={`relative w-9 h-5 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1 ${
+                enabled ? 'bg-brand-600' : 'bg-slate-200'
+              }`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-transform ${enabled ? 'translate-x-4' : ''}`} />
+            </button>
+            <span className="text-xs font-medium text-slate-700">Visible on display</span>
           </div>
 
           {/* Title */}

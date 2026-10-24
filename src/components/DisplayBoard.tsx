@@ -38,6 +38,7 @@ export default function DisplayBoard({ initialItems }: DisplayBoardProps) {
       list = list.filter(
         (item) =>
           item.number.toString().includes(q) ||
+          (item.code?.toLowerCase() ?? '').includes(q) ||
           item.title.toLowerCase().includes(q)
       );
     }

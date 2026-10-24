@@ -8,6 +8,7 @@
 CREATE TABLE IF NOT EXISTS items (
   id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   number      integer NOT NULL UNIQUE CHECK (number >= 1 AND number <= 9999),
+  code        text,
   title       text NOT NULL DEFAULT '',
   image_url   text,
   price       integer CHECK (price IN (1, 2, 3, 5, 10, 20, 30, 50, 100)),

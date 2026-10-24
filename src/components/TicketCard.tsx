@@ -24,9 +24,9 @@ export default function TicketCard({ item }: TicketCardProps) {
           loading="lazy"
           unoptimized={imageUrl.startsWith('https://placehold.co')}
         />
-        {/* Number badge */}
-        <span className="absolute top-2 left-2 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-slate-900/80 text-white text-xs font-bold font-mono tabular-nums backdrop-blur-sm">
-          {item.number}
+        {/* Code / Number badge */}
+        <span className="absolute top-2 left-2 inline-flex items-center justify-center min-w-8 h-8 px-2 rounded-lg bg-slate-900/80 text-white text-xs font-bold font-mono tabular-nums backdrop-blur-sm">
+          {item.code ?? `#${item.number}`}
         </span>
       </div>
 
