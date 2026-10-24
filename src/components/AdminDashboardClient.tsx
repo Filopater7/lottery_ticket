@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { LotteryItem, ItemFormData } from '@/types';
 import { PRICE_TIERS } from '@/types';
 import EditItemModal from './EditItemModal';
@@ -21,6 +21,11 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterValue>('all');
   const router = useRouter();
+
+  // Sync items when server re-renders after router.refresh()
+  useEffect(() => {
+    setItems(initialItems);
+  }, [initialItems]);
 
   // Counts per price tier (always based on full list, ignoring search)
   const counts = useMemo(() => {
