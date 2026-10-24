@@ -27,8 +27,8 @@ async function getSession() {
   if (!DB_CONFIGURED) return null;
   const { createSupabaseServerClient } = await import('@/lib/supabase/server');
   const supabase = await createSupabaseServerClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  return session;
+  const { data: { user } } = await supabase.auth.getUser();
+  return user ? { user } : null;
 }
 
 export default async function AdminDashboardPage() {

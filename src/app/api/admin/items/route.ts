@@ -10,9 +10,9 @@ function normalize(item: LotteryItem): LotteryItem {
 
 async function requireAuth() {
   const supabase = await createSupabaseServerClient();
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('Unauthorized');
-  return session;
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) throw new Error('Unauthorized');
+  return user;
 }
 
 export async function GET() {
