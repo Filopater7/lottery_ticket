@@ -132,7 +132,29 @@ CREATE TABLE IF NOT EXISTS tv_sessions (
   is_active    boolean DEFAULT true
 );
 ALTER TABLE tv_sessions ENABLE ROW LEVEL SECURITY;
--- TV can read session to validate its token (anon)
-CREATE POLICY "tv_sessions_public_read" ON tv_sessions FOR SELECT USING (true);
--- Only service role can insert/update/delete
-CREATE POLICY "tv_sessions_service_write" ON tv_sessions FOR ALL USING (auth.role() = 'service_role');
+
+-- TV / public can SELECT to validate their token (anon key is sufficient)
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'tv_sessions' AND policyname = 'tv_sessions_public_read'
+  ) THEN
+    CREATE POLICY "tv_sessions_public_read"
+      ON tv_sessions FOR SELECT
+      USING (true);
+  END IF;
+END $$;
+
+-- Only the service role (server-side Route Handlers) may INSERT, UPDATE, or DELETE.
+-- Note: Supabase service-role key bypasses RLS by default, so this policy acts as
+-- an explicit allow for the service role while blocking all other write attempts.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'tv_sessions' AND policyname = 'tv_sessions_service_write'
+  ) THEN
+    CREATE POLICY "tv_sessions_service_write"
+      ON tv_sessions FOR ALL
+      TO service_role
+      USING (true)
+      WITH CHECK (true);
+  END IF;
+END $$;

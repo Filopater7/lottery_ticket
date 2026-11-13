@@ -28,6 +28,8 @@ next-env.d.ts
 
 # Supabase local temp files
 supabase/.temp/
+# Agent pipeline artifacts
+.agents/
 
 # OS
 .DS_Store
