@@ -10,7 +10,9 @@ async function requireAuth() {
   return user;
 }
 
+// ---------------------------------------------------------------------------
 // POST /api/tv/session — admin auth required; creates a new pairing session
+// ---------------------------------------------------------------------------
 export async function POST() {
   try {
     await requireAuth();
@@ -41,7 +43,10 @@ export async function POST() {
   }
 }
 
-// GET /api/tv/session?token= — public; validates a token
+// ---------------------------------------------------------------------------
+// GET /api/tv/session?token= — public; validates a stored session token
+// (used by TVReceiver on load to check if its localStorage token is still valid)
+// ---------------------------------------------------------------------------
 export async function GET(req: NextRequest) {
   try {
     const token = req.nextUrl.searchParams.get('token');
@@ -81,7 +86,9 @@ export async function GET(req: NextRequest) {
   }
 }
 
+// ---------------------------------------------------------------------------
 // DELETE /api/tv/session — admin auth required; revokes a session
+// ---------------------------------------------------------------------------
 export async function DELETE(req: NextRequest) {
   try {
     await requireAuth();

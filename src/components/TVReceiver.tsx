@@ -5,239 +5,236 @@ import type { LotteryItem } from '@/types';
 import DisplayBoard from '@/components/DisplayBoard';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
-type TVState =
-  | 'loading'
-  | 'invalid_token'
-  | 'expired_token'
-  | 'revoked_token'
-  | 'no_token'
-  | 'waiting'
-  | 'active'
-  | 'reconnecting';
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-interface TVReceiverProps {
-  token: string | null;
-}
+type TVState =
+  | 'loading'       // checking localStorage on mount
+  | 'enter_code'    // no valid stored session; show PIN entry form
+  | 'pairing'       // submitting the code to the server
+  | 'waiting'       // paired, subscribed, waiting for admin start command
+  | 'active'        // displaying the lottery grid
+  | 'reconnecting'; // Realtime channel lost; re-subscribing
+
+type PairError =
+  | 'invalid_code'
+  | 'expired_code'
+  | 'used_code'
+  | 'rate_limited'
+  | 'server_error';
+
+const STORAGE_KEY = 'tv_session_token';
 
 type SupabaseChannel = ReturnType<ReturnType<typeof createSupabaseBrowserClient>['channel']>;
 
-export default function TVReceiver({ token }: TVReceiverProps) {
-  const [tvState, setTVState] = useState<TVState>(token ? 'loading' : 'no_token');
-  const [items, setItems] = useState<LotteryItem[]>([]);
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'reconnecting'>('reconnecting');
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
-  // Keep latest tvState accessible in async callbacks without stale closure
-  const tvStateRef = useRef<TVState>(tvState);
+export default function TVReceiver() {
+  const [tvState, setTVState]           = useState<TVState>('loading');
+  const [items, setItems]               = useState<LotteryItem[]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'reconnecting'>('reconnecting');
+  const [pairError, setPairError]       = useState<PairError | null>(null);
+  // Controlled PIN input — 6 digits
+  const [pin, setPin]                   = useState('');
+  const [pinSubmitting, setPinSubmitting] = useState(false);
+
+  const tvStateRef  = useRef<TVState>(tvState);
+  const channelRef  = useRef<SupabaseChannel | null>(null);
+  const pinInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => { tvStateRef.current = tvState; }, [tvState]);
 
-  const channelRef = useRef<SupabaseChannel | null>(null);
+  // ---------------------------------------------------------------------------
+  // Items polling — /api/items (same public endpoint as the homepage)
+  // ---------------------------------------------------------------------------
 
-  // Fetch items from public API
   const fetchItems = useCallback(async () => {
     try {
-      const res = await fetch('/api/items');
+      const res  = await fetch('/api/items');
       const json = await res.json() as { data?: LotteryItem[] };
-      if (Array.isArray(json.data)) {
-        setItems(json.data);
-      }
+      if (Array.isArray(json.data)) setItems(json.data);
     } catch (err) {
       console.error('[TVReceiver] fetchItems error', err);
     }
   }, []);
 
-  // Poll items every 30 s
   useEffect(() => {
     fetchItems();
     const interval = setInterval(fetchItems, 30_000);
     return () => clearInterval(interval);
   }, [fetchItems]);
 
-  // Validate token + subscribe to Realtime
-  useEffect(() => {
-    if (!token) {
-      setTVState('no_token');
-      return;
-    }
+  // ---------------------------------------------------------------------------
+  // Realtime subscription
+  // ---------------------------------------------------------------------------
 
+  const teardownChannel = useCallback(() => {
+    if (channelRef.current) {
+      const supabase = createSupabaseBrowserClient();
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
+  }, []);
+
+  const subscribeToChannel = useCallback((channelName: string) => {
+    teardownChannel();
+    const supabase = createSupabaseBrowserClient();
+    const ch = supabase.channel(channelName);
+    channelRef.current = ch;
+
+    ch
+      .on('broadcast', { event: 'tv-control' }, (payload: { payload: { action: string } }) => {
+        if (payload.payload.action === 'start') setTVState('active');
+        else if (payload.payload.action === 'stop')  setTVState('waiting');
+      })
+      .subscribe(async (status: string) => {
+        if (status === 'SUBSCRIBED') {
+          setConnectionStatus('connected');
+          if (tvStateRef.current === 'loading' || tvStateRef.current === 'reconnecting') {
+            setTVState('waiting');
+          }
+          try {
+            await ch.track({ type: 'tv', connected_at: new Date().toISOString() });
+          } catch (e) {
+            console.error('[TVReceiver] presence track error', e);
+          }
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          setConnectionStatus('reconnecting');
+          const cur = tvStateRef.current;
+          if (cur === 'waiting' || cur === 'active') setTVState('reconnecting');
+          setTimeout(() => { if (channelRef.current) channelRef.current.subscribe(); }, 3000);
+        }
+      });
+  }, [teardownChannel]);
+
+  // ---------------------------------------------------------------------------
+  // On mount: check localStorage for a stored session token
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
     let cancelled = false;
-    let channel: SupabaseChannel | null = null;
 
     async function init() {
-      setTVState('loading');
-
-      // 1. Validate token
-      let channelName: string;
-      try {
-        const res = await fetch(`/api/tv/session?token=${encodeURIComponent(token!)}`);
-        const json = await res.json() as { valid?: boolean; channel_name?: string; reason?: string };
-
-        if (cancelled) return;
-
-        if (!json.valid) {
-          if (json.reason === 'expired') {
-            setTVState('expired_token');
-          } else if (json.reason === 'revoked') {
-            setTVState('revoked_token');
-          } else {
-            setTVState('invalid_token');
-          }
-          return;
-        }
-
-        channelName = json.channel_name!;
-      } catch (err) {
-        console.error('[TVReceiver] token validation error', err);
-        if (!cancelled) setTVState('invalid_token');
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (!stored) {
+        if (!cancelled) setTVState('enter_code');
         return;
       }
 
-      // 2. Subscribe to Realtime channel
-      const supabase = createSupabaseBrowserClient();
-      channel = supabase.channel(channelName);
-      channelRef.current = channel;
+      // Validate the stored token
+      try {
+        const res  = await fetch(`/api/tv/session?token=${encodeURIComponent(stored)}`);
+        const json = await res.json() as { valid?: boolean; channel_name?: string };
+        if (cancelled) return;
 
-      channel
-        .on('broadcast', { event: 'tv-control' }, (payload: { payload: { action: string } }) => {
-          if (payload.payload.action === 'start') {
-            setTVState('active');
-          } else if (payload.payload.action === 'stop') {
-            setTVState('waiting');
-          }
-        })
-        .on('presence', { event: 'sync' }, () => {
-          // presence sync — TV stays in current display state
-        })
-        .subscribe(async (status: string) => {
-          if (cancelled) return;
-
-          if (status === 'SUBSCRIBED') {
-            setConnectionStatus('connected');
-            // Transition from loading/reconnecting to waiting (unless already active)
-            if (tvStateRef.current === 'loading' || tvStateRef.current === 'reconnecting') {
-              setTVState('waiting');
-            }
-            // Track TV presence on the channel
-            try {
-              await channel!.track({ type: 'tv', connected_at: new Date().toISOString() });
-            } catch (trackErr) {
-              console.error('[TVReceiver] presence track error', trackErr);
-            }
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            setConnectionStatus('reconnecting');
-            if (tvStateRef.current !== 'invalid_token' && tvStateRef.current !== 'expired_token') {
-              setTVState('reconnecting');
-            }
-            setTimeout(() => {
-              if (!cancelled && channel) channel.subscribe();
-            }, 3000);
-          }
-        });
+        if (json.valid && json.channel_name) {
+          subscribeToChannel(json.channel_name);
+          // tvState transitions to 'waiting' inside the subscribe callback
+        } else {
+          localStorage.removeItem(STORAGE_KEY);
+          setTVState('enter_code');
+        }
+      } catch {
+        if (!cancelled) setTVState('enter_code');
+      }
     }
 
     init();
-
     return () => {
       cancelled = true;
-      if (channel) {
-        const supabase = createSupabaseBrowserClient();
-        supabase.removeChannel(channel);
-      }
+      teardownChannel();
     };
-  }, [token]);
+  }, [subscribeToChannel, teardownChannel]);
 
-  // --- Render states ---
+  // Auto-focus the PIN input when it appears
+  useEffect(() => {
+    if (tvState === 'enter_code' && pinInputRef.current) {
+      pinInputRef.current.focus();
+    }
+  }, [tvState]);
 
-  if (tvState === 'no_token') {
-    return (
-      <div className="fixed inset-0 bg-slate-900 flex items-center justify-center p-8">
-        <div className="text-center max-w-md">
-          <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center mx-auto mb-6">
-            <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
-            </svg>
-          </div>
-          <h1 className="text-xl font-semibold text-white mb-3">TV Display Setup</h1>
-          <p className="text-slate-400 text-sm leading-relaxed mb-6">
-            This page is the store TV receiver. To set it up:
-          </p>
-          <ol className="text-left space-y-3 text-sm text-slate-300">
-            <li className="flex gap-3">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-slate-700 text-slate-400 flex items-center justify-center text-xs font-bold">1</span>
-              <span>Log in to the admin dashboard on your device.</span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-slate-700 text-slate-400 flex items-center justify-center text-xs font-bold">2</span>
-              <span>Click <strong className="text-white">&quot;Connect to Store TV&quot;</strong> in the header.</span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-slate-700 text-slate-400 flex items-center justify-center text-xs font-bold">3</span>
-              <span>Generate a pairing token and copy the TV URL shown.</span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex-shrink-0 w-6 h-6 rounded-full bg-slate-700 text-slate-400 flex items-center justify-center text-xs font-bold">4</span>
-              <span>Open that URL on this TV. The display will appear.</span>
-            </li>
-          </ol>
-        </div>
-      </div>
-    );
+  // ---------------------------------------------------------------------------
+  // PIN submission
+  // ---------------------------------------------------------------------------
+
+  async function submitPin(codeToSubmit: string) {
+    if (codeToSubmit.length !== 6) return;
+    setPinSubmitting(true);
+    setPairError(null);
+    setTVState('pairing');
+
+    try {
+      const res  = await fetch('/api/tv/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: codeToSubmit }),
+      });
+      const json = await res.json() as {
+        token?: string;
+        channel_name?: string;
+        expires_at?: string;
+        error?: string;
+      };
+
+      if (!res.ok) {
+        let err: PairError = 'server_error';
+        if (res.status === 429)                        err = 'rate_limited';
+        else if (res.status === 404)                   err = 'invalid_code';
+        else if (res.status === 410) {
+          if (json.error?.includes('used'))            err = 'used_code';
+          else                                         err = 'expired_code';
+        }
+        setPairError(err);
+        setPin('');
+        setTVState('enter_code');
+        return;
+      }
+
+      // Success — persist token and subscribe
+      localStorage.setItem(STORAGE_KEY, json.token!);
+      subscribeToChannel(json.channel_name!);
+      // tvState → 'waiting' inside subscribe callback
+    } catch {
+      setPairError('server_error');
+      setPin('');
+      setTVState('enter_code');
+    } finally {
+      setPinSubmitting(false);
+    }
   }
 
-  if (tvState === 'invalid_token') {
-    return (
-      <div className="fixed inset-0 bg-slate-900 flex items-center justify-center p-8">
-        <div className="text-center max-w-sm">
-          <div className="w-14 h-14 rounded-full bg-red-900/50 flex items-center justify-center mx-auto mb-5">
-            <svg className="w-7 h-7 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-          </div>
-          <h1 className="text-lg font-semibold text-white mb-2">Invalid Pairing Token</h1>
-          <p className="text-slate-400 text-sm">
-            This token is not recognised. Ask the store owner to generate a new pairing token from the admin dashboard.
-          </p>
-        </div>
-      </div>
-    );
+  // Handle PIN input changes: auto-submit when 6 digits entered
+  function handlePinChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+    setPin(val);
+    if (val.length === 6) submitPin(val);
   }
 
-  if (tvState === 'expired_token') {
-    return (
-      <div className="fixed inset-0 bg-slate-900 flex items-center justify-center p-8">
-        <div className="text-center max-w-sm">
-          <div className="w-14 h-14 rounded-full bg-amber-900/50 flex items-center justify-center mx-auto mb-5">
-            <svg className="w-7 h-7 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <h1 className="text-lg font-semibold text-white mb-2">Pairing Token Expired</h1>
-          <p className="text-slate-400 text-sm">
-            This pairing token has expired (tokens last 24 hours). The store owner needs to generate a new one and update this TV&apos;s URL.
-          </p>
-        </div>
-      </div>
-    );
+  function handlePinKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' && pin.length === 6) submitPin(pin);
   }
 
-  if (tvState === 'revoked_token') {
-    return (
-      <div className="fixed inset-0 bg-slate-900 flex items-center justify-center p-8">
-        <div className="text-center max-w-sm">
-          <div className="w-14 h-14 rounded-full bg-amber-900/50 flex items-center justify-center mx-auto mb-5">
-            <svg className="w-7 h-7 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-            </svg>
-          </div>
-          <h1 className="text-lg font-semibold text-white mb-2">Session Revoked</h1>
-          <p className="text-slate-400 text-sm">
-            This session has been revoked by the admin. Please obtain a new pairing token from the admin dashboard.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // ---------------------------------------------------------------------------
+  // Error messages
+  // ---------------------------------------------------------------------------
 
-  if (tvState === 'loading') {
+  const pairErrorMessages: Record<PairError, string> = {
+    invalid_code: 'That code wasn\'t recognised. Check the code shown in the admin dashboard and try again.',
+    expired_code: 'That code has expired. Ask the admin to generate a new one.',
+    used_code:    'That code has already been used. Ask the admin to generate a new one.',
+    rate_limited: 'Too many attempts. Please wait a few minutes before trying again.',
+    server_error: 'Something went wrong. Please try again.',
+  };
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  // Loading state
+  if (tvState === 'loading' || tvState === 'pairing') {
     return (
       <div className="fixed inset-0 bg-slate-900 flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
@@ -245,14 +242,82 @@ export default function TVReceiver({ token }: TVReceiverProps) {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
           </svg>
-          <p className="text-sm text-slate-500">Connecting&hellip;</p>
+          <p className="text-sm text-slate-500">
+            {tvState === 'pairing' ? 'Verifying code…' : 'Connecting…'}
+          </p>
         </div>
       </div>
     );
   }
 
-  // 'waiting', 'active', 'reconnecting' — render the full display area
-  const isActive = tvState === 'active';
+  // PIN entry state
+  if (tvState === 'enter_code') {
+    return (
+      <div className="fixed inset-0 bg-slate-900 flex items-center justify-center p-8">
+        <div className="text-center w-full max-w-xs">
+          {/* Icon */}
+          <div className="w-16 h-16 rounded-2xl bg-slate-800 flex items-center justify-center mx-auto mb-6">
+            <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
+            </svg>
+          </div>
+
+          <h1 className="text-xl font-semibold text-white mb-2">Enter Pairing Code</h1>
+          <p className="text-slate-400 text-sm mb-6 leading-relaxed">
+            Open the admin dashboard and click{' '}
+            <strong className="text-slate-300">&ldquo;Connect to Store TV&rdquo;</strong>{' '}
+            to get a 6-digit code.
+          </p>
+
+          {/* PIN input */}
+          <div className="relative mb-4">
+            <input
+              ref={pinInputRef}
+              type="text"
+              inputMode="numeric"
+              pattern="\d{6}"
+              maxLength={6}
+              value={pin}
+              onChange={handlePinChange}
+              onKeyDown={handlePinKeyDown}
+              disabled={pinSubmitting}
+              placeholder="000000"
+              className="w-full text-center text-3xl font-bold font-mono tracking-[0.4em] bg-slate-800 text-white border-2 border-slate-700 focus:border-brand-500 focus:outline-none rounded-xl px-4 py-4 placeholder:text-slate-600 placeholder:tracking-[0.4em] transition-colors"
+              aria-label="6-digit pairing code"
+            />
+            {/* Digit progress dots */}
+            <div className="flex justify-center gap-2 mt-3">
+              {Array.from({ length: 6 }, (_, i) => (
+                <span
+                  key={i}
+                  className={`w-2 h-2 rounded-full transition-colors ${
+                    i < pin.length ? 'bg-brand-500' : 'bg-slate-700'
+                  }`}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Error message */}
+          {pairError && (
+            <div className="flex items-start gap-2 p-3 bg-red-900/30 border border-red-800/50 rounded-lg text-left mb-2">
+              <svg className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+              </svg>
+              <p className="text-xs text-red-300 leading-relaxed">{pairErrorMessages[pairError]}</p>
+            </div>
+          )}
+
+          <p className="text-xs text-slate-600 mt-4">
+            Codes expire in 5 minutes and can only be used once.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Waiting / active / reconnecting states
+  const isActive       = tvState === 'active';
   const isReconnecting = tvState === 'reconnecting' || connectionStatus === 'reconnecting';
 
   return (
@@ -293,7 +358,7 @@ export default function TVReceiver({ token }: TVReceiverProps) {
         </div>
       </div>
 
-      {/* Reconnecting badge — shown when connection is lost during active/reconnecting states */}
+      {/* Reconnecting badge */}
       {isReconnecting && (tvState === 'active' || tvState === 'reconnecting') && (
         <div className="absolute top-4 right-4 flex items-center gap-2 bg-slate-800/90 text-slate-300 text-xs font-medium px-3 py-2 rounded-lg backdrop-blur-sm">
           <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
