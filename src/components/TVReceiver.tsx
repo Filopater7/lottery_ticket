@@ -316,6 +316,14 @@ export default function TVReceiver() {
     );
   }
 
+  function unpair() {
+    teardownChannel();
+    localStorage.removeItem(STORAGE_KEY);
+    setPin('');
+    setPairError(null);
+    setTVState('enter_code');
+  }
+
   // Waiting / active / reconnecting states
   const isActive       = tvState === 'active';
   const isReconnecting = tvState === 'reconnecting' || connectionStatus === 'reconnecting';
@@ -344,6 +352,13 @@ export default function TVReceiver() {
           <p className="text-slate-400 text-sm max-w-xs mx-auto">
             This display is paired and ready. The store owner will start the display remotely.
           </p>
+          {/* Unpair link — lets TV re-enter a code without needing DevTools */}
+          <button
+            onClick={unpair}
+            className="mt-8 text-xs text-slate-600 hover:text-slate-400 transition-colors underline underline-offset-2"
+          >
+            Use a different pairing code
+          </button>
         </div>
       </div>
 
