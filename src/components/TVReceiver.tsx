@@ -118,6 +118,17 @@ export default function TVReceiver() {
     let cancelled = false;
 
     async function init() {
+      // ?reset=1 in the URL forces re-pairing (clears any stored token)
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('reset') === '1') {
+        localStorage.removeItem(STORAGE_KEY);
+        // Remove the param from the URL without a page reload
+        const clean = window.location.pathname;
+        window.history.replaceState(null, '', clean);
+        if (!cancelled) setTVState('enter_code');
+        return;
+      }
+
       const stored = localStorage.getItem(STORAGE_KEY);
       if (!stored) {
         if (!cancelled) setTVState('enter_code');
@@ -358,8 +369,7 @@ export default function TVReceiver() {
             className="mt-8 text-xs text-slate-600 hover:text-slate-400 transition-colors underline underline-offset-2"
           >
             Use a different pairing code
-          </button>
-        </div>
+          </button>        </div>
       </div>
 
       {/* Active display — fades in when active */}
