@@ -4,6 +4,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { LotteryItem, ItemFormData } from '@/types';
 import { PRICE_TIERS } from '@/types';
 import EditItemModal from './EditItemModal';
+import ConnectTVModal from './ConnectTVModal';
 import FilterBar, { type FilterValue } from './FilterBar';
 import { useRouter } from 'next/navigation';
 
@@ -20,6 +21,7 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterValue>('all');
+  const [showTVModal, setShowTVModal] = useState(false);
   const router = useRouter();
 
   // Sync items when server re-renders after router.refresh()
@@ -143,6 +145,10 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
           </div>
           <div className="flex items-center gap-3">
             <span className="text-xs text-slate-500 hidden sm:block">{userEmail}</span>
+            <button onClick={() => setShowTVModal(true)} className="btn-secondary text-xs px-3 py-1.5">
+              Connect to Store TV
+            </button>
+            {showTVModal && <ConnectTVModal onClose={() => setShowTVModal(false)} />}
             <a href="/" target="_blank" rel="noopener" className="btn-secondary text-xs px-3 py-1.5">
               View display
             </a>

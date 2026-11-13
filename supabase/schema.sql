@@ -119,3 +119,20 @@ INSERT INTO items (number, title, price, enabled) VALUES
   (49, 'Diamond Dreams',    50,  true),
   (50, 'Grand Finale',      100, true)
 ON CONFLICT (number) DO NOTHING;
+
+-- ============================================================
+-- TV Sessions table for remote display pairing
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tv_sessions (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  token        text UNIQUE NOT NULL,
+  channel_name text UNIQUE NOT NULL,
+  created_at   timestamptz DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  is_active    boolean DEFAULT true
+);
+ALTER TABLE tv_sessions ENABLE ROW LEVEL SECURITY;
+-- TV can read session to validate its token (anon)
+CREATE POLICY "tv_sessions_public_read" ON tv_sessions FOR SELECT USING (true);
+-- Only service role can insert/update/delete
+CREATE POLICY "tv_sessions_service_write" ON tv_sessions FOR ALL USING (auth.role() = 'service_role');
