@@ -14,6 +14,7 @@
  */
 
 import { createSupabaseServerClient, createSupabaseAdminClient } from '@/lib/supabase/server';
+import { setTVCookie } from '@/lib/tv-cookie';
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 
@@ -139,7 +140,7 @@ export async function POST(req: NextRequest) {
   // --- Fetch the associated tv_session to return channel_name ---
   const { data: session, error: sessErr } = await admin
     .from('tv_sessions')
-    .select('token, channel_name, expires_at, is_active')
+    .select('token, channel_name, expires_at, is_active, display_state')
     .eq('token', pairingRow.token)
     .maybeSingle();
 
@@ -151,15 +152,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Session expired or revoked' }, { status: 410 });
   }
 
-  // Return the token and channel_name so the TV can store them in localStorage
-  // and subscribe to Realtime.  The token is an opaque UUID — not a secret in
-  // the cryptographic sense (it's the channel name seed), but it should not
-  // appear in URLs; it stays in localStorage only.
-  return NextResponse.json({
-    token: session.token,
-    channel_name: session.channel_name,
-    expires_at: session.expires_at,
+  // Set an HttpOnly cookie on the TV browser so the token is never exposed to JS
+  // or URLs.  The TV just receives channel_name and display_state — the token
+  // stays server-side only from this point.
+  const res = NextResponse.json({
+    channel_name:  session.channel_name,
+    display_state: (session as { display_state?: boolean }).display_state ?? false,
   });
+  setTVCookie(res, session.token);
+  return res;
 }
 
 // ---------------------------------------------------------------------------

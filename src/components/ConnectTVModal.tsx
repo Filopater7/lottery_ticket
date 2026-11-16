@@ -105,15 +105,6 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
   // Session validation
   // ---------------------------------------------------------------------------
 
-  const validateStoredToken = useCallback(async (token: string): Promise<SessionState | null> => {
-    const res  = await fetch(`/api/tv/session?token=${encodeURIComponent(token)}`);
-    const json = await res.json() as { valid?: boolean; channel_name?: string; expires_at?: string };
-    if (json.valid && json.channel_name && json.expires_at) {
-      return { token, channelName: json.channel_name, expiresAt: json.expires_at };
-    }
-    return null;
-  }, []);
-
   // On mount: check localStorage
   useEffect(() => {
     let cancelled = false;
@@ -122,9 +113,12 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         try {
-          const sess = await validateStoredToken(stored);
-          if (!cancelled && sess) {
+          const res  = await fetch(`/api/tv/session?token=${encodeURIComponent(stored)}`);
+          const json = await res.json() as { valid?: boolean; channel_name?: string; expires_at?: string; display_state?: boolean };
+          if (!cancelled && json.valid && json.channel_name && json.expires_at) {
+            const sess: SessionState = { token: stored, channelName: json.channel_name, expiresAt: json.expires_at };
             setSession(sess);
+            setDisplayActive(json.display_state ?? false);
             subscribeToChannel(sess.channelName);
           } else if (!cancelled) {
             localStorage.removeItem(STORAGE_KEY);
@@ -225,9 +219,19 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
   }
 
   async function sendCommand(action: 'start' | 'stop') {
-    if (!channelRef.current) return;
+    if (!channelRef.current || !session) return;
     setWorking(true);
     try {
+      // 1. Persist the new display state in the DB first so the TV can recover
+      //    it on reconnect even if it misses this broadcast.
+      const patchRes = await fetch('/api/tv/session', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: session.token, display_state: action === 'start' }),
+      });
+      if (!patchRes.ok) throw new Error('Failed to persist display state');
+
+      // 2. Broadcast the command to the TV
       await channelRef.current.send({
         type: 'broadcast',
         event: 'tv-control',
