@@ -37,9 +37,13 @@ export async function GET(req: NextRequest) {
       if (
         session &&
         session.is_active &&
-        new Date(session.expires_at as string) > new Date() &&
-        session.store_id
+        new Date(session.expires_at as string) > new Date()
       ) {
+        // Every paired TV must have a store_id. If it doesn't, return empty
+        // rather than leaking all master games to an unscoped session.
+        if (!session.store_id) {
+          return NextResponse.json({ data: [], empty_store: true, reason: 'no_store' });
+        }
         // Fetch the store's ordered selection joined with master item data
         const { data: selRows, error: selErr } = await admin
           .from('store_selections')
@@ -61,9 +65,10 @@ export async function GET(req: NextRequest) {
 
         return NextResponse.json({ data: items });
       }
-      // Session without store_id OR invalid/expired → fall through to full list
-      // (backward-compat for TV sessions created before store feature)
-    }
+      // If the session is invalid/expired, fall through to the public path.
+      // This handles the TV browser requesting items while the session just expired —
+      // it will get the full public list (same as the homepage) until it re-pairs.
+      }
 
     // ── Default public path ───────────────────────────────────────────────
     // No TV cookie, or TV session has no store_id: return all enabled items.

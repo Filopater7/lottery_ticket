@@ -11,7 +11,7 @@ import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
 type TVState =
   | 'loading'       // checking cookie on mount
-  | 'enter_code'    // no valid session cookie; show PIN entry form
+  | 'enter_code'    // no valid session; show PIN entry form
   | 'pairing'       // submitting the code to the server
   | 'waiting'       // paired + subscribed, display_state = false
   | 'active'        // paired + subscribed, display_state = true
@@ -37,10 +37,10 @@ function fsRequest(el: Element): Promise<void> {
     msRequestFullscreen?: () => Promise<void>;
   };
   return (
-    e.requestFullscreen?.()          ??
-    e.webkitRequestFullscreen?.()    ??
-    e.mozRequestFullScreen?.()       ??
-    e.msRequestFullscreen?.()        ??
+    e.requestFullscreen?.()       ??
+    e.webkitRequestFullscreen?.() ??
+    e.mozRequestFullScreen?.()    ??
+    e.msRequestFullscreen?.()     ??
     Promise.resolve()
   );
 }
@@ -52,10 +52,10 @@ function fsExit(): Promise<void> {
     msExitFullscreen?: () => Promise<void>;
   };
   return (
-    d.exitFullscreen?.()          ??
-    d.webkitExitFullscreen?.()    ??
-    d.mozCancelFullScreen?.()     ??
-    d.msExitFullscreen?.()        ??
+    d.exitFullscreen?.()       ??
+    d.webkitExitFullscreen?.() ??
+    d.mozCancelFullScreen?.()  ??
+    d.msExitFullscreen?.()     ??
     Promise.resolve()
   );
 }
@@ -88,15 +88,17 @@ export default function TVReceiver() {
   const [pin, setPin]                   = useState('');
   const [pinSubmitting, setPinSubmitting] = useState(false);
 
+  // true once the TV has a valid store-paired session
+  const [isPaired, setIsPaired] = useState(false);
+
   // Fullscreen state
-  const [isFullscreen, setIsFullscreen]               = useState(false);
-  // True when requestFullscreen() threw — browser needs a user gesture first
-  const [needsGesture, setNeedsGesture]               = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [needsGesture, setNeedsGesture] = useState(false);
 
   const tvStateRef  = useRef<TVState>(tvState);
   const channelRef  = useRef<SupabaseChannel | null>(null);
   const pinInputRef = useRef<HTMLInputElement>(null);
-  const rootRef     = useRef<HTMLDivElement>(null);  // fullscreen target
+  const rootRef     = useRef<HTMLDivElement>(null);
   const channelNameRef = useRef<string | null>(null);
 
   useEffect(() => { tvStateRef.current = tvState; }, [tvState]);
@@ -105,15 +107,10 @@ export default function TVReceiver() {
   // Fullscreen management
   // ---------------------------------------------------------------------------
 
-  // Track fullscreen state via browser events
   useEffect(() => {
     function onFsChange() {
       setIsFullscreen(!!fsElement());
-      // If the user pressed Escape to exit fullscreen while display is active,
-      // show the re-enter button so they can get back easily.
-      if (!fsElement() && tvStateRef.current === 'active') {
-        setNeedsGesture(true);
-      }
+      if (!fsElement() && tvStateRef.current === 'active') setNeedsGesture(true);
     }
     document.addEventListener('fullscreenchange',       onFsChange);
     document.addEventListener('webkitfullscreenchange', onFsChange);
@@ -127,17 +124,12 @@ export default function TVReceiver() {
     };
   }, []);
 
-  // Attempt fullscreen — called programmatically when active state is set.
-  // Browsers block this unless triggered by a user gesture; we catch the
-  // rejection and fall back to the manual button.
   const enterFullscreen = useCallback(async () => {
-    if (!rootRef.current || fsElement()) return; // already fullscreen
+    if (!rootRef.current || fsElement()) return;
     try {
       await fsRequest(rootRef.current);
       setNeedsGesture(false);
     } catch {
-      // Browser blocked the automatic request (no prior user gesture).
-      // Show the manual "Enter Fullscreen" button overlay.
       setNeedsGesture(true);
     }
   }, []);
@@ -147,7 +139,6 @@ export default function TVReceiver() {
     try { await fsExit(); } catch { /* ignore */ }
   }, []);
 
-  // React to tvState changes for fullscreen
   useEffect(() => {
     if (tvState === 'active') {
       enterFullscreen();
@@ -158,7 +149,9 @@ export default function TVReceiver() {
   }, [tvState, enterFullscreen, exitFullscreen]);
 
   // ---------------------------------------------------------------------------
-  // Items polling
+  // Items polling — only runs when the TV has a valid paired session.
+  // The tv_session HttpOnly cookie is sent automatically; the server uses it
+  // to look up store_id and return only that store's ordered selection.
   // ---------------------------------------------------------------------------
 
   const fetchItems = useCallback(async () => {
@@ -177,11 +170,13 @@ export default function TVReceiver() {
     }
   }, []);
 
+  // Start polling only after pairing is established
   useEffect(() => {
+    if (!isPaired) return;
     fetchItems();
     const interval = setInterval(fetchItems, 30_000);
     return () => clearInterval(interval);
-  }, [fetchItems]);
+  }, [isPaired, fetchItems]);
 
   // ---------------------------------------------------------------------------
   // Fetch persisted display_state from the server
@@ -208,7 +203,7 @@ export default function TVReceiver() {
     }
   }, []);
 
-  const subscribeToChannel = useCallback((channelName: string, initialDisplayState: boolean) => {
+  const subscribeToChannel = useCallback((channelName: string) => {
     teardownChannel();
     channelNameRef.current = channelName;
 
@@ -224,13 +219,11 @@ export default function TVReceiver() {
       .subscribe(async (status: string) => {
         if (status === 'SUBSCRIBED') {
           setConnectionStatus('connected');
-
           const cur = tvStateRef.current;
           if (cur === 'loading' || cur === 'pairing' || cur === 'reconnecting') {
             const ds = await fetchDisplayState();
             setTVState(ds ? 'active' : 'waiting');
           }
-
           try {
             await ch.track({ type: 'tv', connected_at: new Date().toISOString() });
           } catch (e) {
@@ -247,12 +240,17 @@ export default function TVReceiver() {
 
   // ---------------------------------------------------------------------------
   // On mount: validate session via HttpOnly cookie, handle ?reset=1
+  //
+  // KEY RULE: a session is only valid if it has a store_id.
+  // Sessions without store_id (legacy / Main Admin only) are rejected and the
+  // TV shows the PIN screen. This ensures every TV is properly store-paired.
   // ---------------------------------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
+      // ?reset=1 forces re-pairing by clearing the cookie server-side
       const params = new URLSearchParams(window.location.search);
       if (params.get('reset') === '1') {
         window.history.replaceState(null, '', window.location.pathname);
@@ -266,12 +264,19 @@ export default function TVReceiver() {
           valid?: boolean;
           channel_name?: string;
           display_state?: boolean;
+          store_id?: string | null;
         };
         if (cancelled) return;
 
-        if (json.valid && json.channel_name) {
-          subscribeToChannel(json.channel_name, json.display_state ?? false);
+        // A valid session MUST have a store_id — sessions without one are
+        // treated as unpaired (legacy sessions, pre-multi-store).
+        if (json.valid && json.channel_name && json.store_id) {
+          setIsPaired(true);
+          subscribeToChannel(json.channel_name);
         } else {
+          // No valid paired session — show PIN screen.
+          // Also clear the cookie if it exists but has no store_id, so it
+          // doesn't interfere on subsequent visits.
           setTVState('enter_code');
         }
       } catch {
@@ -294,7 +299,7 @@ export default function TVReceiver() {
   }, [tvState]);
 
   // ---------------------------------------------------------------------------
-  // PIN submission
+  // PIN submission — server sets HttpOnly tv_session cookie with store_id link
   // ---------------------------------------------------------------------------
 
   async function submitPin(codeToSubmit: string) {
@@ -304,7 +309,7 @@ export default function TVReceiver() {
     setTVState('pairing');
 
     try {
-      const res  = await fetch('/api/tv/pair', {
+      const res = await fetch('/api/tv/pair', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: codeToSubmit }),
@@ -329,7 +334,9 @@ export default function TVReceiver() {
         return;
       }
 
-      subscribeToChannel(json.channel_name!, json.display_state ?? false);
+      // Cookie is now set by the server (tv_session, HttpOnly, includes store_id).
+      setIsPaired(true);
+      subscribeToChannel(json.channel_name!);
     } catch {
       setPairError('server_error');
       setPin('');
@@ -352,6 +359,9 @@ export default function TVReceiver() {
   function unpair() {
     teardownChannel();
     exitFullscreen();
+    setIsPaired(false);
+    setItems([]);
+    setStoreEmpty(false);
     setPin('');
     setPairError(null);
     setNeedsGesture(false);
@@ -397,8 +407,8 @@ export default function TVReceiver() {
           </div>
           <h1 className="text-xl font-semibold text-white mb-2">Enter Pairing Code</h1>
           <p className="text-slate-400 text-sm mb-6 leading-relaxed">
-            Open the admin dashboard and click{' '}
-            <strong className="text-slate-300">&ldquo;Connect to Store TV&rdquo;</strong>{' '}
+            Open the Store Admin dashboard and click{' '}
+            <strong className="text-slate-300">&ldquo;Connect TV&rdquo;</strong>{' '}
             to get a 6-digit code.
           </p>
           <div className="relative mb-4">
@@ -436,15 +446,13 @@ export default function TVReceiver() {
     );
   }
 
-  // waiting / active / reconnecting
   const isActive       = tvState === 'active';
   const isReconnecting = tvState === 'reconnecting' || connectionStatus === 'reconnecting';
 
   return (
-    // rootRef is the fullscreen target — the entire TV display surface
     <div ref={rootRef} className="fixed inset-0 bg-slate-900 overflow-hidden">
 
-      {/* ── Waiting screen ───────────────────────────────────────────── */}
+      {/* Waiting screen */}
       <div
         className="absolute inset-0 flex items-center justify-center transition-opacity duration-300"
         style={{ opacity: isActive ? 0 : 1, pointerEvents: isActive ? 'none' : 'auto' }}
@@ -473,14 +481,12 @@ export default function TVReceiver() {
         </div>
       </div>
 
-      {/* ── Active display ───────────────────────────────────────────── */}
-      {/* TV-optimised: no max-width cap, tight padding, fills viewport    */}
+      {/* Active display */}
       <div
         className="absolute inset-0 bg-slate-50 overflow-auto transition-opacity duration-300"
         style={{ opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none' }}
         aria-hidden={!isActive}
       >
-        {/* Minimal top bar — brand only, no nav, no search header */}
         <div className="sticky top-0 z-10 bg-white/90 backdrop-blur-sm border-b border-slate-100 px-4 py-2 flex items-center gap-2">
           <div className="w-6 h-6 rounded-md bg-brand-600 flex items-center justify-center">
             <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -506,8 +512,7 @@ export default function TVReceiver() {
         </div>
       </div>
 
-      {/* ── "Enter Fullscreen" gesture button ───────────────────────── */}
-      {/* Shown when: display is active AND browser blocked auto-fullscreen */}
+      {/* Enter Fullscreen gesture button */}
       {isActive && needsGesture && !isFullscreen && (
         <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <button
@@ -515,14 +520,13 @@ export default function TVReceiver() {
               if (rootRef.current) {
                 fsRequest(rootRef.current)
                   .then(() => setNeedsGesture(false))
-                  .catch(() => { /* user declined or unsupported — dismiss overlay */ setNeedsGesture(false); });
+                  .catch(() => setNeedsGesture(false));
               }
             }}
             className="flex flex-col items-center gap-4 group"
             aria-label="Enter fullscreen"
           >
             <div className="w-20 h-20 rounded-full bg-white/10 border-2 border-white/30 flex items-center justify-center group-hover:bg-white/20 transition-colors">
-              {/* Expand icon */}
               <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
               </svg>
@@ -533,7 +537,7 @@ export default function TVReceiver() {
         </div>
       )}
 
-      {/* ── Reconnecting badge ───────────────────────────────────────── */}
+      {/* Reconnecting badge */}
       {isReconnecting && (tvState === 'active' || tvState === 'reconnecting') && (
         <div className="absolute top-4 right-4 z-30 flex items-center gap-2 bg-slate-800/90 text-slate-300 text-xs font-medium px-3 py-2 rounded-lg backdrop-blur-sm">
           <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
