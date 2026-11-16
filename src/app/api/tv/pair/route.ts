@@ -15,6 +15,7 @@
 
 import { createSupabaseServerClient, createSupabaseAdminClient } from '@/lib/supabase/server';
 import { setTVCookie } from '@/lib/tv-cookie';
+import { STORE_COOKIE, parseStoreCookie } from '@/lib/store-auth';
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 
@@ -23,13 +24,6 @@ export const dynamic = 'force-dynamic';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-async function requireAuth() {
-  const supabase = await createSupabaseServerClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user) throw new Error('Unauthorized');
-  return user;
-}
 
 /** Generate a cryptographically random 6-digit code (000000–999999). */
 function generateSixDigitCode(): string {
@@ -177,7 +171,35 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    await requireAuth();
+    // Accept either Main Admin (Supabase Auth) or Store Admin (store cookie)
+    const supabase   = await createSupabaseServerClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    const isMainAdmin = !!user;
+
+    let storeAdminId: string | null = null;
+    if (!isMainAdmin) {
+      const cookieVal = req.cookies.get(STORE_COOKIE)?.value;
+      const parsed    = parseStoreCookie(cookieVal);
+      if (parsed) {
+        const admin = createSupabaseAdminClient();
+        const { data: store } = await admin
+          .from('stores')
+          .select('id, session_version, is_active')
+          .eq('id', parsed.storeId)
+          .maybeSingle();
+        if (
+          store &&
+          (store.session_version as number) === parsed.sessionVersion &&
+          (store.is_active as boolean)
+        ) {
+          storeAdminId = store.id as string;
+        }
+      }
+    }
+
+    if (!isMainAdmin && !storeAdminId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
     const body = await req.json() as { token?: string };
     const { token } = body;
@@ -187,10 +209,10 @@ export async function PATCH(req: NextRequest) {
 
     const admin = createSupabaseAdminClient();
 
-    // Verify the session exists and is active
+    // Verify the session exists, is active, and belongs to the right owner
     const { data: session, error: sessErr } = await admin
       .from('tv_sessions')
-      .select('token, expires_at, is_active')
+      .select('token, expires_at, is_active, store_id')
       .eq('token', token)
       .maybeSingle();
 
@@ -201,15 +223,20 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Session expired or revoked' }, { status: 410 });
     }
 
-    // Invalidate any existing unused codes for this session to avoid confusion
+    // Store Admin ownership check: session must belong to their store
+    if (storeAdminId && (session.store_id as string | null) !== storeAdminId) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    // Invalidate any existing unused codes for this session
     await admin
       .from('pairing_codes')
       .update({ used_at: new Date().toISOString() })
       .eq('token', token)
       .is('used_at', null);
 
-    // Generate and insert a fresh 6-digit code (expires in 5 minutes)
-    const code = generateSixDigitCode();
+    // Generate a fresh 6-digit code (expires in 5 minutes)
+    const code      = generateSixDigitCode();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
     const { error: insertErr } = await admin
