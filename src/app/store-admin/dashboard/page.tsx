@@ -51,7 +51,7 @@ async function getStoreSelection(storeId: string): Promise<string[]> {
 
 export default async function StoreAdminDashboardPage() {
   const ctx = await getStoreContext();
-  if (!ctx) redirect('/store-admin/login');
+  if (!ctx) redirect('/store-admin/logout');  // clears stale cookie, then → login
 
   const [allItems, selectedIds] = await Promise.all([
     getAllItems(),

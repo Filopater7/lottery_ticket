@@ -11,13 +11,14 @@ export async function middleware(request: NextRequest) {
 
   // ── Store Admin guard ────────────────────────────────────────────────
   if (path.startsWith('/store-admin')) {
-    const isStoreLoginPath = path === '/store-admin/login';
+    const isStoreLoginPath  = path === '/store-admin/login';
+    const isStoreLogoutPath = path === '/store-admin/logout'; // must always pass through
     const cookieVal = request.cookies.get(STORE_COOKIE)?.value;
     const parsed    = parseStoreCookie(cookieVal);
 
-    // We do a lightweight cookie parse check here (no DB call — that's the
-    // API route's job).  The cookie contains store_id:session_version;
-    // the middleware only checks structural validity.
+    // Always allow the logout route — it clears the cookie itself
+    if (isStoreLogoutPath) return NextResponse.next();
+
     if (!isStoreLoginPath && !parsed) {
       return NextResponse.redirect(new URL('/store-admin/login', request.url));
     }
