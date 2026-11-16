@@ -15,8 +15,8 @@ import { NextResponse } from 'next/server';
 
 export const STORE_COOKIE     = 'store_admin_session';
 export const COOKIE_MAX_AGE   = 60 * 60 * 24 * 30; // 30 days
-// Cookie path is scoped to /store-admin so it is never sent to other routes
-const COOKIE_PATH = '/store-admin';
+// Path is / so the cookie is sent to both /store-admin/* pages and /api/store/* routes
+const COOKIE_PATH = '/';
 
 // ---------------------------------------------------------------------------
 // PBKDF2 helpers (Node WebCrypto — no packages)
