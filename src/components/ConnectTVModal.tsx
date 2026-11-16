@@ -24,13 +24,16 @@ interface PairingCodeState {
 
 interface ConnectTVModalProps {
   onClose: () => void;
+  /** When provided (Store Admin context), skip the store-list fetch and
+   *  lock the session to this store. No Main Admin auth required. */
+  fixedStoreId?: string;
 }
 
 type SupabaseChannel = ReturnType<ReturnType<typeof createSupabaseBrowserClient>['channel']>;
 
 type PresenceEntry = { type?: string; [key: string]: unknown };
 
-export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
+export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModalProps) {
   const [loading, setLoading]           = useState(true);
   const [stores, setStores]             = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<string>('');
@@ -119,8 +122,11 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
 
     async function init() {
       // Load store list in parallel with session check
+      // Skip if fixedStoreId is set (Store Admin context — no Main Admin auth)
       const [storesRes, stored] = await Promise.all([
-        fetch('/api/admin/stores').then(r => r.json() as Promise<{ data?: Store[] }>).catch(() => ({ data: [] })),
+        fixedStoreId
+          ? Promise.resolve({ data: [] as Store[] })
+          : fetch('/api/admin/stores').then(r => r.json() as Promise<{ data?: Store[] }>).catch(() => ({ data: [] as Store[] })),
         Promise.resolve(localStorage.getItem(STORAGE_KEY)),
       ]);
       if (!cancelled) setStores(storesRes.data ?? []);
@@ -161,10 +167,12 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
     setWorking(true);
     setError('');
     try {
+      // Use fixedStoreId (Store Admin) or the dropdown selection (Main Admin)
+      const storeIdToUse = fixedStoreId ?? (selectedStoreId || null);
       const res  = await fetch('/api/tv/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_id: selectedStoreId || null }),
+        body: JSON.stringify({ store_id: storeIdToUse }),
       });
       const json = await res.json() as { token?: string; channel_name?: string; expires_at?: string; store_id?: string | null; error?: string };
       if (!res.ok) throw new Error(json.error ?? 'Failed to create session');
@@ -330,8 +338,8 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
                 Open <span className="font-mono font-semibold text-slate-700">lotteryticket.vercel.app/tv</span> on the
                 store TV, then click below to get a pairing code.
               </p>
-              {/* Store selector */}
-              {stores.length > 0 && (
+              {/* Store selector — only shown to Main Admin (no fixedStoreId) */}
+              {!fixedStoreId && stores.length > 0 && (
                 <div className="mb-4 text-left">
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
                     Assign to store <span className="text-slate-400 font-normal">(optional)</span>

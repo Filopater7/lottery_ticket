@@ -18,23 +18,22 @@ function normalize(item: LotteryItem): LotteryItem {
 }
 
 export async function GET(req: NextRequest) {
-  // Verify store session
   const cookieVal = req.cookies.get(STORE_COOKIE)?.value;
   const parsed    = parseStoreCookie(cookieVal);
-  if (!parsed) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  if (!parsed) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  // Validate session_version (key-reset invalidation)
   const admin = createSupabaseAdminClient();
   const { data: store, error: storeErr } = await admin
     .from('stores')
-    .select('session_version')
+    .select('session_version, is_active')
     .eq('id', parsed.storeId)
     .maybeSingle();
 
   if (storeErr || !store || (store.session_version as number) !== parsed.sessionVersion) {
     return NextResponse.json({ error: 'Session expired' }, { status: 401 });
+  }
+  if (!(store.is_active as boolean)) {
+    return NextResponse.json({ error: 'Account deactivated' }, { status: 403 });
   }
 
   // Fetch all master items (enabled and disabled — store admin needs to see all)

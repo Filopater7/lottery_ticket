@@ -1,25 +1,24 @@
 /**
  * Store Admin authentication helpers.
  *
- * Access keys are stored as PBKDF2-SHA256 (100 000 iterations) with a
+ * Passwords are stored as PBKDF2-SHA256 (100 000 iterations) with a
  * per-store random salt.  Node's WebCrypto (available on Vercel / Node 18+)
  * is used so no additional packages are needed.
  *
  * The store-admin HttpOnly cookie stores:
  *   "<store_id>:<session_version>"
- * When a store's access key is reset, session_version is incremented and
- * all existing cookies become invalid on next verification.
+ * When a password is reset or the account is deactivated, session_version is
+ * incremented and all existing cookies become invalid on next verification.
  */
 
 import { NextResponse } from 'next/server';
 
-export const STORE_COOKIE     = 'store_admin_session';
-export const COOKIE_MAX_AGE   = 60 * 60 * 24 * 30; // 30 days
-// Path is / so the cookie is sent to both /store-admin/* pages and /api/store/* routes
-const COOKIE_PATH = '/';
+export const STORE_COOKIE   = 'store_admin_session';
+export const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+const COOKIE_PATH = '/'; // must reach both /store-admin/* and /api/store/*
 
 // ---------------------------------------------------------------------------
-// PBKDF2 helpers (Node WebCrypto — no packages)
+// PBKDF2 helpers (Node WebCrypto — no packages needed)
 // ---------------------------------------------------------------------------
 
 /** Generate a random 32-byte hex salt. */
@@ -29,15 +28,10 @@ export function generateSalt(): string {
   return Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Generate a random access key (UUID, 122 bits of entropy). */
-export function generateAccessKey(): string {
-  return crypto.randomUUID();
-}
-
-/** Derive a PBKDF2-SHA256 hex digest from a plaintext key + hex salt. */
-export async function hashAccessKey(key: string, salt: string): Promise<string> {
+/** Derive a PBKDF2-SHA256 hex digest from a plaintext password + hex salt. */
+export async function hashPassword(password: string, salt: string): Promise<string> {
   const enc     = new TextEncoder();
-  const keyMat  = await crypto.subtle.importKey('raw', enc.encode(key), 'PBKDF2', false, ['deriveBits']);
+  const keyMat  = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
   const saltBuf = enc.encode(salt);
   const bits    = await crypto.subtle.deriveBits(
     { name: 'PBKDF2', hash: 'SHA-256', salt: saltBuf, iterations: 100_000 },
@@ -48,13 +42,12 @@ export async function hashAccessKey(key: string, salt: string): Promise<string> 
 }
 
 /** Constant-time comparison via PBKDF2 re-derivation. */
-export async function verifyAccessKey(
+export async function verifyPassword(
   candidate: string,
   storedHash: string,
   salt: string,
 ): Promise<boolean> {
-  const derived = await hashAccessKey(candidate, salt);
-  // Compare byte-by-byte to avoid short-circuit timing leaks
+  const derived = await hashPassword(candidate, salt);
   if (derived.length !== storedHash.length) return false;
   let diff = 0;
   for (let i = 0; i < derived.length; i++) {
@@ -89,7 +82,9 @@ export function clearStoreCookie(res: NextResponse) {
 }
 
 /** Parse the cookie value → { storeId, sessionVersion } or null. */
-export function parseStoreCookie(value: string | undefined): { storeId: string; sessionVersion: number } | null {
+export function parseStoreCookie(
+  value: string | undefined,
+): { storeId: string; sessionVersion: number } | null {
   if (!value) return null;
   const parts = value.split(':');
   if (parts.length !== 2) return null;

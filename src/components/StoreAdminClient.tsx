@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback, useRef } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import type { LotteryItem } from '@/types';
+import ConnectTVModal from '@/components/ConnectTVModal';
 
 interface StoreAdminClientProps {
   storeId:            string;
@@ -28,6 +29,7 @@ export default function StoreAdminClient({
   const [search,      setSearch]      = useState('');
   const [saving,      setSaving]      = useState(false);
   const [toast,       setToast]       = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const [showTV,      setShowTV]      = useState(false);
 
   // Drag-and-drop state (native HTML5)
   const dragIndexRef = useRef<number | null>(null);
@@ -148,6 +150,12 @@ export default function StoreAdminClient({
               <span className="hidden sm:inline text-xs text-amber-600 font-medium">Unsaved changes</span>
             )}
             <button
+              onClick={() => setShowTV(true)}
+              className="btn-secondary text-xs px-3 py-1.5"
+            >
+              Connect TV
+            </button>
+            <button
               onClick={handleSave}
               disabled={saving || !isDirty}
               className="btn-primary text-xs px-3 py-1.5 disabled:opacity-40"
@@ -160,6 +168,14 @@ export default function StoreAdminClient({
           </div>
         </div>
       </header>
+
+      {/* Connect TV Modal — scoped to this store */}
+      {showTV && (
+        <ConnectTVModal
+          onClose={() => setShowTV(false)}
+          fixedStoreId={storeId}
+        />
+      )}
 
       {/* Two-panel layout */}
       <div className="flex-1 max-w-screen-xl mx-auto w-full px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-2 gap-6">

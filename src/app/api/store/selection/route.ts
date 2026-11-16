@@ -19,22 +19,24 @@ function normalize(item: LotteryItem): LotteryItem {
   return { ...item, price: item.price != null ? (Number(item.price) as LotteryItem['price']) : null };
 }
 
-/** Verify the store cookie and return { storeId } or throw a 401 response. */
+/** Verify the store cookie and return storeId, or throw a 401/403 response. */
 async function requireStoreSession(req: NextRequest): Promise<string> {
   const cookieVal = req.cookies.get(STORE_COOKIE)?.value;
   const parsed    = parseStoreCookie(cookieVal);
   if (!parsed) throw NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  // Check session_version — invalidated when access key is reset
   const admin = createSupabaseAdminClient();
   const { data: store, error } = await admin
     .from('stores')
-    .select('id, session_version')
+    .select('id, session_version, is_active')
     .eq('id', parsed.storeId)
     .maybeSingle();
 
   if (error || !store || (store.session_version as number) !== parsed.sessionVersion) {
     throw NextResponse.json({ error: 'Session expired' }, { status: 401 });
+  }
+  if (!(store.is_active as boolean)) {
+    throw NextResponse.json({ error: 'Account deactivated' }, { status: 403 });
   }
 
   return store.id as string;

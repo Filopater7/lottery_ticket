@@ -17,11 +17,12 @@ async function getStoreContext() {
 
   const { data: store } = await admin
     .from('stores')
-    .select('id, name, session_version')
+    .select('id, name, session_version, is_active')
     .eq('id', parsed.storeId)
     .maybeSingle();
 
   if (!store || (store.session_version as number) !== parsed.sessionVersion) return null;
+  if (!(store.is_active as boolean)) return null;
   return { storeId: store.id as string, storeName: store.name as string };
 }
 
