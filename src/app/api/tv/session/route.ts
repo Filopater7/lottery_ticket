@@ -13,10 +13,25 @@ async function requireAuth() {
 
 // ---------------------------------------------------------------------------
 // POST /api/tv/session — admin auth required; creates a new pairing session
+// Body (optional): { store_id?: string }
 // ---------------------------------------------------------------------------
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
     await requireAuth();
+
+    const body = await req.json().catch(() => ({})) as { store_id?: string };
+    const store_id = body.store_id ?? null;
+
+    // If a store_id was supplied, verify it exists (service role, so bypass RLS)
+    if (store_id) {
+      const admin = createSupabaseAdminClient();
+      const { data: store } = await admin
+        .from('stores')
+        .select('id')
+        .eq('id', store_id)
+        .maybeSingle();
+      if (!store) return NextResponse.json({ error: 'Store not found' }, { status: 404 });
+    }
 
     const token = crypto.randomUUID();
     const channelName = `tv-display-${token}`;
@@ -27,12 +42,12 @@ export async function POST() {
       .insert({
         token,
         channel_name: channelName,
-        // 1-year expiry — only explicit revocation should end the session
         expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
         is_active: true,
         display_state: false,
+        store_id,
       })
-      .select('token, channel_name, expires_at, display_state')
+      .select('token, channel_name, expires_at, display_state, store_id')
       .single();
 
     if (error) throw error;
@@ -70,7 +85,7 @@ export async function GET(req: NextRequest) {
     const admin = createSupabaseAdminClient();
     const { data, error } = await admin
       .from('tv_sessions')
-      .select('token, channel_name, expires_at, is_active, display_state')
+      .select('token, channel_name, expires_at, is_active, display_state, store_id')
       .eq('token', token)
       .maybeSingle();
 
@@ -99,6 +114,7 @@ export async function GET(req: NextRequest) {
       channel_name: data.channel_name,
       expires_at:   data.expires_at,
       display_state: data.display_state,
+      store_id:     (data as { store_id?: string | null }).store_id ?? null,
     });
 
     // Refresh the cookie on every TV check-in so it stays alive

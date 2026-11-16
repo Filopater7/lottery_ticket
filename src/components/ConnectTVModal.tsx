@@ -5,10 +5,16 @@ import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 
 const STORAGE_KEY = 'tv_session_token';
 
+interface Store {
+  id: string;
+  name: string;
+}
+
 interface SessionState {
   token: string;
   channelName: string;
   expiresAt: string;
+  storeId: string | null;
 }
 
 interface PairingCodeState {
@@ -26,6 +32,8 @@ type PresenceEntry = { type?: string; [key: string]: unknown };
 
 export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
   const [loading, setLoading]           = useState(true);
+  const [stores, setStores]             = useState<Store[]>([]);
+  const [selectedStoreId, setSelectedStoreId] = useState<string>('');
   const [session, setSession]           = useState<SessionState | null>(null);
   const [pairing, setPairing]           = useState<PairingCodeState | null>(null);
   const [tvPresent, setTVPresent]       = useState(false);
@@ -110,13 +118,19 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
     let cancelled = false;
 
     async function init() {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      // Load store list in parallel with session check
+      const [storesRes, stored] = await Promise.all([
+        fetch('/api/admin/stores').then(r => r.json() as Promise<{ data?: Store[] }>).catch(() => ({ data: [] })),
+        Promise.resolve(localStorage.getItem(STORAGE_KEY)),
+      ]);
+      if (!cancelled) setStores(storesRes.data ?? []);
+
       if (stored) {
         try {
           const res  = await fetch(`/api/tv/session?token=${encodeURIComponent(stored)}`);
-          const json = await res.json() as { valid?: boolean; channel_name?: string; expires_at?: string; display_state?: boolean };
+          const json = await res.json() as { valid?: boolean; channel_name?: string; expires_at?: string; display_state?: boolean; store_id?: string | null };
           if (!cancelled && json.valid && json.channel_name && json.expires_at) {
-            const sess: SessionState = { token: stored, channelName: json.channel_name, expiresAt: json.expires_at };
+            const sess: SessionState = { token: stored, channelName: json.channel_name, expiresAt: json.expires_at, storeId: json.store_id ?? null };
             setSession(sess);
             setDisplayActive(json.display_state ?? false);
             subscribeToChannel(sess.channelName);
@@ -147,21 +161,25 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
     setWorking(true);
     setError('');
     try {
-      const res  = await fetch('/api/tv/session', { method: 'POST' });
-      const json = await res.json() as { token?: string; channel_name?: string; expires_at?: string; error?: string };
+      const res  = await fetch('/api/tv/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ store_id: selectedStoreId || null }),
+      });
+      const json = await res.json() as { token?: string; channel_name?: string; expires_at?: string; store_id?: string | null; error?: string };
       if (!res.ok) throw new Error(json.error ?? 'Failed to create session');
 
       const sess: SessionState = {
         token:       json.token!,
         channelName: json.channel_name!,
         expiresAt:   json.expires_at!,
+        storeId:     json.store_id ?? null,
       };
       localStorage.setItem(STORAGE_KEY, sess.token);
       setSession(sess);
       setTVPresent(false);
       setDisplayActive(false);
       subscribeToChannel(sess.channelName);
-      // Immediately generate a pairing code for the new session
       await generatePairingCode(sess.token);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create session');
@@ -312,6 +330,24 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
                 Open <span className="font-mono font-semibold text-slate-700">lotteryticket.vercel.app/tv</span> on the
                 store TV, then click below to get a pairing code.
               </p>
+              {/* Store selector */}
+              {stores.length > 0 && (
+                <div className="mb-4 text-left">
+                  <label className="block text-xs font-medium text-slate-700 mb-1.5">
+                    Assign to store <span className="text-slate-400 font-normal">(optional)</span>
+                  </label>
+                  <select
+                    value={selectedStoreId}
+                    onChange={(e) => setSelectedStoreId(e.target.value)}
+                    className="input-field text-sm"
+                  >
+                    <option value="">— No store (legacy / unassigned) —</option>
+                    {stores.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <button
                 onClick={generateSession}
                 disabled={working}
@@ -329,11 +365,18 @@ export default function ConnectTVModal({ onClose }: ConnectTVModalProps) {
               <div className="flex items-center justify-between py-2.5 px-4 bg-slate-50 rounded-xl">
                 <div className="flex items-center gap-2.5">
                   <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${tvPresent ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                  <span className="text-sm text-slate-700 font-medium">
-                    {tvPresent
-                      ? displayActive ? 'TV connected · displaying' : 'TV connected · waiting'
-                      : 'TV not connected'}
-                  </span>
+                  <div>
+                    <span className="text-sm text-slate-700 font-medium">
+                      {tvPresent
+                        ? displayActive ? 'TV connected · displaying' : 'TV connected · waiting'
+                        : 'TV not connected'}
+                    </span>
+                    {session.storeId && (
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {stores.find(s => s.id === session.storeId)?.name ?? 'Store'}
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <span className="text-xs text-slate-400">{hoursRemaining(session.expiresAt)}</span>
               </div>

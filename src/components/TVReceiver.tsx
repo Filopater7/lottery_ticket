@@ -82,6 +82,7 @@ function fsElement(): Element | null {
 export default function TVReceiver() {
   const [tvState, setTVState]           = useState<TVState>('loading');
   const [items, setItems]               = useState<LotteryItem[]>([]);
+  const [storeEmpty, setStoreEmpty]     = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'reconnecting'>('reconnecting');
   const [pairError, setPairError]       = useState<PairError | null>(null);
   const [pin, setPin]                   = useState('');
@@ -163,7 +164,13 @@ export default function TVReceiver() {
   const fetchItems = useCallback(async () => {
     try {
       const res  = await fetch('/api/items');
-      const json = await res.json() as { data?: LotteryItem[] };
+      const json = await res.json() as { data?: LotteryItem[]; empty_store?: boolean };
+      if (json.empty_store) {
+        setItems([]);
+        setStoreEmpty(true);
+        return;
+      }
+      setStoreEmpty(false);
       if (Array.isArray(json.data)) setItems(json.data);
     } catch (err) {
       console.error('[TVReceiver] fetchItems error', err);
@@ -483,7 +490,19 @@ export default function TVReceiver() {
           <span className="text-sm font-semibold text-slate-700">Lottery Tickets</span>
         </div>
         <div className="px-3 py-3">
-          <DisplayBoard initialItems={items} />
+          {storeEmpty ? (
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center mb-5">
+                <svg className="w-7 h-7 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 6v.75m0 3v.75m0 3v.75m0 3V18m-9-5.25h5.25M7.5 15h3M3.375 5.25c-.621 0-1.125.504-1.125 1.125v3.026a2.999 2.999 0 010 5.198v3.026c0 .621.504 1.125 1.125 1.125h17.25c.621 0 1.125-.504 1.125-1.125v-3.026a2.999 2.999 0 010-5.198V6.375c0-.621-.504-1.125-1.125-1.125H3.375z" />
+                </svg>
+              </div>
+              <p className="text-base font-medium text-slate-600 mb-2">No games selected for this store yet.</p>
+              <p className="text-sm text-slate-400">Please contact your store administrator.</p>
+            </div>
+          ) : (
+            <DisplayBoard initialItems={items} />
+          )}
         </div>
       </div>
 

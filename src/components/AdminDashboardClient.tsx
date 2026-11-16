@@ -5,6 +5,7 @@ import type { LotteryItem, ItemFormData } from '@/types';
 import { PRICE_TIERS } from '@/types';
 import EditItemModal from './EditItemModal';
 import ConnectTVModal from './ConnectTVModal';
+import StoresManagementModal from './StoresManagementModal';
 import FilterBar, { type FilterValue } from './FilterBar';
 import { useRouter } from 'next/navigation';
 
@@ -22,6 +23,7 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<FilterValue>('all');
   const [showTVModal, setShowTVModal] = useState(false);
+  const [showStoresModal, setShowStoresModal] = useState(false);
   const router = useRouter();
 
   // Sync items when server re-renders after router.refresh()
@@ -149,6 +151,10 @@ export default function AdminDashboardClient({ initialItems, userEmail, isDemo =
               Connect to Store TV
             </button>
             {showTVModal && <ConnectTVModal onClose={() => setShowTVModal(false)} />}
+            <button onClick={() => setShowStoresModal(true)} className="btn-secondary text-xs px-3 py-1.5">
+              Stores
+            </button>
+            {showStoresModal && <StoresManagementModal onClose={() => setShowStoresModal(false)} />}
             <a href="/" target="_blank" rel="noopener" className="btn-secondary text-xs px-3 py-1.5">
               View display
             </a>
