@@ -12,19 +12,45 @@ export async function middleware(request: NextRequest) {
   // ── Store Admin guard ────────────────────────────────────────────────
   if (path.startsWith('/store-admin')) {
     const isStoreLoginPath  = path === '/store-admin/login';
-    const isStoreLogoutPath = path === '/store-admin/logout'; // must always pass through
+    const isStoreLogoutPath = path === '/store-admin/logout';
     const cookieVal = request.cookies.get(STORE_COOKIE)?.value;
     const parsed    = parseStoreCookie(cookieVal);
 
-    // Always allow the logout route — it clears the cookie itself
-    if (isStoreLogoutPath) return NextResponse.next();
-
-    if (!isStoreLoginPath && !parsed) {
-      return NextResponse.redirect(new URL('/store-admin/login', request.url));
+    // Logout route: clear cookie and redirect to login — no further checks
+    if (isStoreLogoutPath) {
+      const loginUrl = new URL('/store-admin/login', request.url);
+      const res = NextResponse.redirect(loginUrl);
+      res.cookies.set(STORE_COOKIE, '', {
+        httpOnly: true,
+        secure:   process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path:     '/',
+        maxAge:   0,
+      });
+      return res;
     }
+
+    // No valid cookie → send to login (clear any malformed cookie while we're here)
+    if (!isStoreLoginPath && !parsed) {
+      const res = NextResponse.redirect(new URL('/store-admin/login', request.url));
+      if (cookieVal) {
+        // Clear whatever garbage is in the cookie so the loop can't recur
+        res.cookies.set(STORE_COOKIE, '', {
+          httpOnly: true,
+          secure:   process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          path:     '/',
+          maxAge:   0,
+        });
+      }
+      return res;
+    }
+
+    // Already have a valid-looking cookie and trying to reach login → go to dashboard
     if (isStoreLoginPath && parsed) {
       return NextResponse.redirect(new URL('/store-admin/dashboard', request.url));
     }
+
     return NextResponse.next();
   }
 
