@@ -127,6 +127,17 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
   }, [teardownChannel]);
 
   // ---------------------------------------------------------------------------
+  // authHeaders — added to every admin-facing TV API request.
+  // The X-Auth-Role header tells the server which credential to verify.
+  // It never grants permissions by itself — the server verifies the credential.
+  // fixedStoreId present = Store Admin context; absent = Main Admin context.
+  // ---------------------------------------------------------------------------
+  const authHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Auth-Role':  fixedStoreId ? 'store_admin' : 'main_admin',
+  };
+
+  // ---------------------------------------------------------------------------
   // On mount: fetch session from server (no localStorage involved)
   // ---------------------------------------------------------------------------
 
@@ -146,10 +157,10 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
       // The server uses the caller's auth cookie — no token is supplied by the client.
       try {
         const url = fixedStoreId
-          ? '/api/tv/session/mine'                                      // Store Admin — server uses cookie
+          ? '/api/tv/session/mine'
           : `/api/tv/session/mine${selectedStoreId ? `?store_id=${selectedStoreId}` : ''}`;
 
-        const res  = await fetch(url);
+        const res  = await fetch(url, { headers: { 'X-Auth-Role': fixedStoreId ? 'store_admin' : 'main_admin' } });
         const json = await res.json() as {
           session?: {
             token: string;
@@ -197,7 +208,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
 
       const res  = await fetch('/api/tv/session', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify(body),
       });
       const json = await res.json() as { token?: string; channel_name?: string; expires_at?: string; store_id?: string | null; error?: string };
@@ -229,7 +240,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
     try {
       const res  = await fetch('/api/tv/pair', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ token }),
       });
       const json = await res.json() as { code?: string; expires_at?: string; error?: string };
@@ -250,7 +261,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
     try {
       await fetch('/api/tv/session', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ token: session.token }),
       });
       teardownChannel();
@@ -270,7 +281,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
       // 1. Persist display_state server-side first (TV recovers from DB on reconnect)
       const patchRes = await fetch('/api/tv/session', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ token: session.token, display_state: action === 'start' }),
       });
       if (!patchRes.ok) throw new Error('Failed to persist display state');
