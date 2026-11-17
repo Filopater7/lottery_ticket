@@ -42,9 +42,15 @@ export async function GET(req: NextRequest) {
     // Store Admin: scope is always their own store; query param is ignored
     query = query.eq('store_id', auth.storeId);
   } else {
-    // Main Admin: optionally filter by store_id from query param
+    // Main Admin: filter to a specific store if supplied, otherwise restrict
+    // to unassigned sessions (store_id IS NULL) so Store Admin sessions are
+    // never returned when Main Admin opens the modal without selecting a store.
     const storeId = req.nextUrl.searchParams.get('store_id');
-    if (storeId) query = query.eq('store_id', storeId);
+    if (storeId) {
+      query = query.eq('store_id', storeId);   // scoped to the selected store
+    } else {
+      query = query.is('store_id', null);       // unassigned sessions only
+    }
   }
 
   const { data, error } = await query.maybeSingle();
