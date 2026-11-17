@@ -1,9 +1,25 @@
 'use client';
 
+/**
+ * ConnectTVModal
+ *
+ * SESSION ISOLATION MODEL
+ * -----------------------
+ * The token for the current TV session is NEVER stored in localStorage.
+ * On open, the modal calls GET /api/tv/session/mine which returns the
+ * active session owned by the authenticated caller (Main Admin via Supabase
+ * Auth, or Store Admin via store_admin_session cookie).  The server decides
+ * which session belongs to this caller — the client never supplies a token
+ * or store_id to the ownership check.
+ *
+ * This means:
+ *   - Opening Store A's modal never reads Store B's token.
+ *   - Main Admin and Store Admins each get their own session independently.
+ *   - Multiple tabs cannot share or overwrite each other's tokens.
+ */
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { createSupabaseBrowserClient } from '@/lib/supabase/client';
-
-const STORAGE_KEY = 'tv_session_token';
 
 interface Store {
   id: string;
@@ -19,32 +35,35 @@ interface SessionState {
 
 interface PairingCodeState {
   code: string;
-  expiresAt: string;   // ISO string; 5-min window
+  expiresAt: string;
 }
 
 interface ConnectTVModalProps {
   onClose: () => void;
-  /** When provided (Store Admin context), skip the store-list fetch and
-   *  lock the session to this store. No Main Admin auth required. */
+  /**
+   * When set (Store Admin context), tells the modal it is operating on behalf
+   * of this store.  Used only for UI display (store name in status row) and
+   * to skip the Main Admin store-list fetch.  The server always derives the
+   * actual store ownership from the cookie — this prop is never sent to the
+   * server as a trust signal.
+   */
   fixedStoreId?: string;
 }
 
 type SupabaseChannel = ReturnType<ReturnType<typeof createSupabaseBrowserClient>['channel']>;
-
-type PresenceEntry = { type?: string; [key: string]: unknown };
+type PresenceEntry   = { type?: string; [key: string]: unknown };
 
 export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModalProps) {
-  const [loading, setLoading]           = useState(true);
-  const [stores, setStores]             = useState<Store[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [stores,        setStores]        = useState<Store[]>([]);
   const [selectedStoreId, setSelectedStoreId] = useState<string>('');
-  const [session, setSession]           = useState<SessionState | null>(null);
-  const [pairing, setPairing]           = useState<PairingCodeState | null>(null);
-  const [tvPresent, setTVPresent]       = useState(false);
+  const [session,       setSession]       = useState<SessionState | null>(null);
+  const [pairing,       setPairing]       = useState<PairingCodeState | null>(null);
+  const [tvPresent,     setTVPresent]     = useState(false);
   const [displayActive, setDisplayActive] = useState(false);
-  const [error, setError]               = useState('');
-  const [working, setWorking]           = useState(false);
-  // Countdown seconds remaining for the pairing code
-  const [countdown, setCountdown]       = useState(0);
+  const [error,         setError]         = useState('');
+  const [working,       setWorking]       = useState(false);
+  const [countdown,     setCountdown]     = useState(0);
 
   const channelRef      = useRef<SupabaseChannel | null>(null);
   const countdownRef    = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -56,7 +75,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
   // ---------------------------------------------------------------------------
 
   function hoursRemaining(expiresAt: string): string {
-    const diff = new Date(expiresAt).getTime() - Date.now();
+    const diff    = new Date(expiresAt).getTime() - Date.now();
     if (diff <= 0) return 'Expired';
     const hours   = Math.floor(diff / (1000 * 60 * 60));
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
@@ -69,13 +88,14 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
     const tick = () => {
       const secs = Math.max(0, Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000));
       setCountdown(secs);
-      if (secs === 0) {
-        clearInterval(countdownRef.current!);
-        setPairing(null);   // code expired — clear it
-      }
+      if (secs === 0) { clearInterval(countdownRef.current!); setPairing(null); }
     };
     tick();
     countdownRef.current = setInterval(tick, 1000);
+  }
+
+  function fmtCountdown(secs: number): string {
+    return `${Math.floor(secs / 60).toString().padStart(2, '0')}:${(secs % 60).toString().padStart(2, '0')}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -84,69 +104,72 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
 
   const teardownChannel = useCallback(() => {
     if (channelRef.current) {
-      const supabase = createSupabaseBrowserClient();
-      supabase.removeChannel(channelRef.current);
+      createSupabaseBrowserClient().removeChannel(channelRef.current);
       channelRef.current = null;
     }
   }, []);
 
   const subscribeToChannel = useCallback((channelName: string) => {
     teardownChannel();
-    const supabase = createSupabaseBrowserClient();
-    const ch = supabase.channel(channelName);
-
+    const ch = createSupabaseBrowserClient().channel(channelName);
     ch
       .on('presence', { event: 'sync' }, () => {
-        const state = ch.presenceState() as Record<string, PresenceEntry[]>;
-        const tvConnected = Object.values(state).some((presences) =>
-          presences.some((p) => p.type === 'tv')
-        );
-        setTVPresent(tvConnected);
+        const state     = ch.presenceState() as Record<string, PresenceEntry[]>;
+        const connected = Object.values(state).some(ps => ps.some(p => p.type === 'tv'));
+        setTVPresent(connected);
       })
       .on('broadcast', { event: 'tv-control' }, (payload: { payload: { action: string } }) => {
         if (payload.payload.action === 'start') setDisplayActive(true);
-        else if (payload.payload.action === 'stop')  setDisplayActive(false);
+        else if (payload.payload.action === 'stop') setDisplayActive(false);
       })
       .subscribe();
-
     channelRef.current = ch;
   }, [teardownChannel]);
 
   // ---------------------------------------------------------------------------
-  // Session validation
+  // On mount: fetch session from server (no localStorage involved)
   // ---------------------------------------------------------------------------
 
-  // On mount: check localStorage
   useEffect(() => {
     let cancelled = false;
 
     async function init() {
-      // Load store list in parallel with session check
-      // Skip if fixedStoreId is set (Store Admin context — no Main Admin auth)
-      const [storesRes, stored] = await Promise.all([
-        fixedStoreId
-          ? Promise.resolve({ data: [] as Store[] })
-          : fetch('/api/admin/stores').then(r => r.json() as Promise<{ data?: Store[] }>).catch(() => ({ data: [] as Store[] })),
-        Promise.resolve(localStorage.getItem(STORAGE_KEY)),
-      ]);
-      if (!cancelled) setStores(storesRes.data ?? []);
-
-      if (stored) {
-        try {
-          const res  = await fetch(`/api/tv/session?token=${encodeURIComponent(stored)}`);
-          const json = await res.json() as { valid?: boolean; channel_name?: string; expires_at?: string; display_state?: boolean; store_id?: string | null };
-          if (!cancelled && json.valid && json.channel_name && json.expires_at) {
-            const sess: SessionState = { token: stored, channelName: json.channel_name, expiresAt: json.expires_at, storeId: json.store_id ?? null };
-            setSession(sess);
-            setDisplayActive(json.display_state ?? false);
-            subscribeToChannel(sess.channelName);
-          } else if (!cancelled) {
-            localStorage.removeItem(STORAGE_KEY);
-          }
-        } catch {
-          // ignore — treat as no session
-        }
+      // Fetch stores list (Main Admin only — Store Admin context skips this)
+      if (!fixedStoreId) {
+        fetch('/api/admin/stores')
+          .then(r => r.json() as Promise<{ data?: Store[] }>)
+          .then(json => { if (!cancelled) setStores(json.data ?? []); })
+          .catch(() => {});
       }
+
+      // Fetch the active session owned by this authenticated caller from the server.
+      // The server uses the caller's auth cookie — no token is supplied by the client.
+      try {
+        const url = fixedStoreId
+          ? '/api/tv/session/mine'                                      // Store Admin — server uses cookie
+          : `/api/tv/session/mine${selectedStoreId ? `?store_id=${selectedStoreId}` : ''}`;
+
+        const res  = await fetch(url);
+        const json = await res.json() as {
+          session?: {
+            token: string;
+            channel_name: string;
+            expires_at: string;
+            display_state: boolean;
+            store_id: string | null;
+          } | null;
+        };
+
+        if (cancelled) return;
+
+        if (json.session) {
+          const s = json.session;
+          setSession({ token: s.token, channelName: s.channel_name, expiresAt: s.expires_at, storeId: s.store_id });
+          setDisplayActive(s.display_state);
+          subscribeToChannel(s.channel_name);
+        }
+      } catch { /* no session or network error — show empty state */ }
+
       if (!cancelled) setLoading(false);
     }
 
@@ -156,8 +179,8 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
       teardownChannel();
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally runs once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // runs once on mount
 
   // ---------------------------------------------------------------------------
   // Actions
@@ -167,12 +190,15 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
     setWorking(true);
     setError('');
     try {
-      // Use fixedStoreId (Store Admin) or the dropdown selection (Main Admin)
-      const storeIdToUse = fixedStoreId ?? (selectedStoreId || null);
+      // POST body carries store_id only for Main Admin store selection.
+      // For Store Admin the server ignores any body store_id and uses the cookie.
+      const body: Record<string, string> = {};
+      if (!fixedStoreId && selectedStoreId) body.store_id = selectedStoreId;
+
       const res  = await fetch('/api/tv/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_id: storeIdToUse }),
+        body: JSON.stringify(body),
       });
       const json = await res.json() as { token?: string; channel_name?: string; expires_at?: string; store_id?: string | null; error?: string };
       if (!res.ok) throw new Error(json.error ?? 'Failed to create session');
@@ -183,7 +209,6 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
         expiresAt:   json.expires_at!,
         storeId:     json.store_id ?? null,
       };
-      localStorage.setItem(STORAGE_KEY, sess.token);
       setSession(sess);
       setTVPresent(false);
       setDisplayActive(false);
@@ -209,10 +234,8 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
       });
       const json = await res.json() as { code?: string; expires_at?: string; error?: string };
       if (!res.ok) throw new Error(json.error ?? 'Failed to generate code');
-
-      const pc: PairingCodeState = { code: json.code!, expiresAt: json.expires_at! };
-      setPairing(pc);
-      startCountdown(pc.expiresAt);
+      setPairing({ code: json.code!, expiresAt: json.expires_at! });
+      startCountdown(json.expires_at!);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to generate code');
     } finally {
@@ -235,12 +258,8 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
       setPairing(null);
       setTVPresent(false);
       setDisplayActive(false);
-      localStorage.removeItem(STORAGE_KEY);
       if (countdownRef.current) clearInterval(countdownRef.current);
-    } catch {
-      // best-effort revoke
-    }
-    // Create fresh session + code
+    } catch { /* best-effort revoke */ }
     await generateSession();
   }
 
@@ -248,8 +267,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
     if (!channelRef.current || !session) return;
     setWorking(true);
     try {
-      // 1. Persist the new display state in the DB first so the TV can recover
-      //    it on reconnect even if it misses this broadcast.
+      // 1. Persist display_state server-side first (TV recovers from DB on reconnect)
       const patchRes = await fetch('/api/tv/session', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -257,7 +275,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
       });
       if (!patchRes.ok) throw new Error('Failed to persist display state');
 
-      // 2. Broadcast the command to the TV
+      // 2. Broadcast to TV over Realtime
       await channelRef.current.send({
         type: 'broadcast',
         event: 'tv-control',
@@ -271,17 +289,6 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Render helpers
-  // ---------------------------------------------------------------------------
-
-  // Format countdown as mm:ss
-  function fmtCountdown(secs: number): string {
-    const m = Math.floor(secs / 60).toString().padStart(2, '0');
-    const s = (secs % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
-  }
-
   const hasSession = !!session;
 
   // ---------------------------------------------------------------------------
@@ -291,12 +298,9 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
   return (
     <div role="dialog" aria-modal="true" aria-labelledby="tv-modal-title"
       className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Panel */}
       <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
-
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
@@ -314,7 +318,6 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
 
         {/* Body */}
         <div className="px-6 py-5 space-y-5">
-
           {/* Loading */}
           {loading && (
             <div className="flex items-center justify-center py-8">
@@ -325,7 +328,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
             </div>
           )}
 
-          {/* ── No session ──────────────────────────────────────────────── */}
+          {/* No session */}
           {!loading && !hasSession && (
             <div className="text-center py-4">
               <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-4">
@@ -338,35 +341,25 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
                 Open <span className="font-mono font-semibold text-slate-700">lotteryticket.vercel.app/tv</span> on the
                 store TV, then click below to get a pairing code.
               </p>
-              {/* Store selector — only shown to Main Admin (no fixedStoreId) */}
+              {/* Store selector — Main Admin only, never shown to Store Admin */}
               {!fixedStoreId && stores.length > 0 && (
                 <div className="mb-4 text-left">
                   <label className="block text-xs font-medium text-slate-700 mb-1.5">
                     Assign to store <span className="text-slate-400 font-normal">(optional)</span>
                   </label>
-                  <select
-                    value={selectedStoreId}
-                    onChange={(e) => setSelectedStoreId(e.target.value)}
-                    className="input-field text-sm"
-                  >
-                    <option value="">— No store (legacy / unassigned) —</option>
-                    {stores.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
+                  <select value={selectedStoreId} onChange={e => setSelectedStoreId(e.target.value)} className="input-field text-sm">
+                    <option value="">— No store (unassigned) —</option>
+                    {stores.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
               )}
-              <button
-                onClick={generateSession}
-                disabled={working}
-                className="btn-primary text-sm w-full"
-              >
+              <button onClick={generateSession} disabled={working} className="btn-primary text-sm w-full">
                 {working ? 'Setting up…' : 'Get pairing code'}
               </button>
             </div>
           )}
 
-          {/* ── Session exists ──────────────────────────────────────────── */}
+          {/* Session exists */}
           {!loading && hasSession && session && (
             <>
               {/* Status row */}
@@ -375,11 +368,9 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
                   <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${tvPresent ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                   <div>
                     <span className="text-sm text-slate-700 font-medium">
-                      {tvPresent
-                        ? displayActive ? 'TV connected · displaying' : 'TV connected · waiting'
-                        : 'TV not connected'}
+                      {tvPresent ? (displayActive ? 'TV connected · displaying' : 'TV connected · waiting') : 'TV not connected'}
                     </span>
-                    {session.storeId && (
+                    {session.storeId && stores.length > 0 && (
                       <p className="text-xs text-slate-400 mt-0.5">
                         {stores.find(s => s.id === session.storeId)?.name ?? 'Store'}
                       </p>
@@ -389,7 +380,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
                 <span className="text-xs text-slate-400">{hoursRemaining(session.expiresAt)}</span>
               </div>
 
-              {/* ── TV not yet connected: show pairing code ── */}
+              {/* TV not yet connected — show pairing code */}
               {!tvPresent && (
                 <div className="text-center space-y-3">
                   <p className="text-xs text-slate-500 leading-relaxed">
@@ -397,63 +388,40 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
                     <span className="font-mono font-semibold text-slate-700">lotteryticket.vercel.app/tv</span>{' '}
                     and enter this code:
                   </p>
-
                   {pairing && countdown > 0 ? (
                     <>
-                      {/* Big 6-digit code */}
                       <div className="flex items-center justify-center gap-1.5 py-1" aria-label={`Pairing code: ${pairing.code}`}>
                         {pairing.code.split('').map((digit, i) => (
-                          <span
-                            key={i}
-                            className="w-10 h-12 flex items-center justify-center rounded-lg bg-slate-900 text-white text-2xl font-bold font-mono tracking-widest select-all"
-                          >
+                          <span key={i} className="w-10 h-12 flex items-center justify-center rounded-lg bg-slate-900 text-white text-2xl font-bold font-mono">
                             {digit}
                           </span>
                         ))}
                       </div>
-                      {/* Countdown */}
                       <p className="text-xs text-slate-400">
                         Expires in{' '}
                         <span className={`font-mono font-semibold ${countdown <= 30 ? 'text-red-500' : 'text-slate-600'}`}>
                           {fmtCountdown(countdown)}
                         </span>
                       </p>
-                      <button
-                        onClick={() => generatePairingCode()}
-                        disabled={working}
-                        className="text-xs text-slate-500 hover:text-slate-700 transition-colors underline underline-offset-2"
-                      >
+                      <button onClick={() => generatePairingCode()} disabled={working} className="text-xs text-slate-500 hover:text-slate-700 transition-colors underline underline-offset-2">
                         Generate new code
                       </button>
                     </>
                   ) : (
-                    // No code or code expired
-                    <button
-                      onClick={() => generatePairingCode()}
-                      disabled={working}
-                      className="btn-secondary text-sm w-full"
-                    >
+                    <button onClick={() => generatePairingCode()} disabled={working} className="btn-secondary text-sm w-full">
                       {working ? 'Generating…' : pairing ? 'Code expired — generate new code' : 'Generate pairing code'}
                     </button>
                   )}
                 </div>
               )}
 
-              {/* ── TV connected: show start/stop controls ── */}
+              {/* TV connected — start/stop controls */}
               {tvPresent && (
                 <div className="flex gap-2">
-                  <button
-                    onClick={() => sendCommand('start')}
-                    disabled={displayActive || working}
-                    className="btn-primary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
+                  <button onClick={() => sendCommand('start')} disabled={displayActive || working} className="btn-primary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
                     Start display
                   </button>
-                  <button
-                    onClick={() => sendCommand('stop')}
-                    disabled={!displayActive || working}
-                    className="btn-secondary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
+                  <button onClick={() => sendCommand('stop')} disabled={!displayActive || working} className="btn-secondary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
                     Stop display
                   </button>
                 </div>
@@ -461,11 +429,7 @@ export default function ConnectTVModal({ onClose, fixedStoreId }: ConnectTVModal
 
               {/* Rotate session */}
               <div className="pt-1 border-t border-slate-100">
-                <button
-                  onClick={rotateSession}
-                  disabled={working}
-                  className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
-                >
+                <button onClick={rotateSession} disabled={working} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
                   Unpair TV / generate new session
                 </button>
               </div>

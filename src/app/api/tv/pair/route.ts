@@ -171,13 +171,17 @@ export async function POST(req: NextRequest) {
 
 export async function PATCH(req: NextRequest) {
   try {
-    // Accept either Main Admin (Supabase Auth) or Store Admin (store cookie)
-    const supabase   = await createSupabaseServerClient();
+    // Explicit auth — no silent fallback between Main Admin and Store Admin
+    let authKind: 'main_admin' | 'store_admin' = 'main_admin';
+    let storeAdminId: string | null = null;
+
+    // 1. Try Supabase Auth (Main Admin)
+    const supabase = await createSupabaseServerClient();
     const { data: { user } } = await supabase.auth.getUser();
     const isMainAdmin = !!user;
 
-    let storeAdminId: string | null = null;
     if (!isMainAdmin) {
+      // 2. Try store-admin cookie — only if Supabase Auth is absent
       const cookieVal = req.cookies.get(STORE_COOKIE)?.value;
       const parsed    = parseStoreCookie(cookieVal);
       if (parsed) {
@@ -193,6 +197,7 @@ export async function PATCH(req: NextRequest) {
           (store.is_active as boolean)
         ) {
           storeAdminId = store.id as string;
+          authKind     = 'store_admin';
         }
       }
     }
@@ -203,9 +208,7 @@ export async function PATCH(req: NextRequest) {
 
     const body = await req.json() as { token?: string };
     const { token } = body;
-    if (!token) {
-      return NextResponse.json({ error: 'Missing token' }, { status: 400 });
-    }
+    if (!token) return NextResponse.json({ error: 'Missing token' }, { status: 400 });
 
     const admin = createSupabaseAdminClient();
 
@@ -216,39 +219,25 @@ export async function PATCH(req: NextRequest) {
       .eq('token', token)
       .maybeSingle();
 
-    if (sessErr || !session) {
-      return NextResponse.json({ error: 'Session not found' }, { status: 404 });
-    }
-    if (!session.is_active || new Date(session.expires_at) <= new Date()) {
-      return NextResponse.json({ error: 'Session expired or revoked' }, { status: 410 });
-    }
+    if (sessErr || !session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+    if (!session.is_active || new Date(session.expires_at) <= new Date()) return NextResponse.json({ error: 'Session expired or revoked' }, { status: 410 });
 
-    // Store Admin ownership check: session must belong to their store
-    if (storeAdminId && (session.store_id as string | null) !== storeAdminId) {
+    // Store Admin: session must belong to their store (server-side, not client-supplied)
+    if (authKind === 'store_admin' && storeAdminId && (session.store_id as string | null) !== storeAdminId) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // Invalidate any existing unused codes for this session
-    await admin
-      .from('pairing_codes')
-      .update({ used_at: new Date().toISOString() })
-      .eq('token', token)
-      .is('used_at', null);
+    // Invalidate existing unused codes for this session
+    await admin.from('pairing_codes').update({ used_at: new Date().toISOString() }).eq('token', token).is('used_at', null);
 
-    // Generate a fresh 6-digit code (expires in 5 minutes)
+    // Generate fresh 6-digit code (expires 5 minutes)
     const code      = generateSixDigitCode();
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
-
-    const { error: insertErr } = await admin
-      .from('pairing_codes')
-      .insert({ code, token, expires_at: expiresAt });
-
+    const { error: insertErr } = await admin.from('pairing_codes').insert({ code, token, expires_at: expiresAt });
     if (insertErr) throw insertErr;
 
     return NextResponse.json({ code, expires_at: expiresAt }, { status: 201 });
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    if (message === 'Unauthorized') return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     console.error('[PATCH /api/tv/pair]', err);
     return NextResponse.json({ error: 'Failed to generate code' }, { status: 500 });
   }
